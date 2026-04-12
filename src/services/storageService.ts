@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '../constants';
-import { AzureCredentials, Workspace } from '../types';
+import { AzureCredentials, AuthTokens, Workspace } from '../types';
 
 export async function saveCredentials(credentials: AzureCredentials): Promise<void> {
   await AsyncStorage.setItem(STORAGE_KEYS.CREDENTIALS, JSON.stringify(credentials));
@@ -18,6 +18,25 @@ export async function loadCredentials(): Promise<AzureCredentials | null> {
 
 export async function clearCredentials(): Promise<void> {
   await AsyncStorage.removeItem(STORAGE_KEYS.CREDENTIALS);
+  await AsyncStorage.removeItem(STORAGE_KEYS.AUTH_TOKENS);
+}
+
+export async function saveAuthTokens(tokens: AuthTokens): Promise<void> {
+  await AsyncStorage.setItem(STORAGE_KEYS.AUTH_TOKENS, JSON.stringify(tokens));
+}
+
+export async function loadAuthTokens(): Promise<AuthTokens | null> {
+  const raw = await AsyncStorage.getItem(STORAGE_KEYS.AUTH_TOKENS);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as AuthTokens;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearAuthTokens(): Promise<void> {
+  await AsyncStorage.removeItem(STORAGE_KEYS.AUTH_TOKENS);
 }
 
 export async function saveSelectedWorkspace(workspace: Workspace): Promise<void> {

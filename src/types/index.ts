@@ -5,6 +5,20 @@ export interface AzureCredentials {
   subscriptionId: string;
 }
 
+export interface AuthTokens {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt: number;
+  clientId: string;
+  subscriptionId: string;
+}
+
+export interface Subscription {
+  subscriptionId: string;
+  displayName: string;
+  state: string;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -76,9 +90,24 @@ export interface Experiment {
   lastModifiedUtc: string;
 }
 
+export interface LogFile {
+  name: string;
+  url: string;
+  size?: number;
+}
+
+export interface JobOutput {
+  name: string;
+  type: string;
+  uri?: string;
+  description?: string;
+  mode?: string;
+}
+
 export type RootStackParamList = {
   Login: undefined;
+  Subscriptions: undefined;
   Workspaces: undefined;
-  Jobs: { workspaceName: string; resourceGroup: string };
-  JobDetails: { runId: string; experimentName: string; workspaceName: string; resourceGroup: string };
+  Jobs: { workspaceName: string; resourceGroup: string; workspaceLocation: string };
+  JobDetails: { runId: string; experimentName: string; workspaceName: string; resourceGroup: string; workspaceLocation: string };
 };

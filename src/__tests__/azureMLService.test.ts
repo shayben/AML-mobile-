@@ -100,24 +100,26 @@ describe('AzureMLService', () => {
     });
   });
 
-  describe('listRuns', () => {
+  describe('listJobs', () => {
     it('maps API response to Run objects', async () => {
-      const apiRuns = [
+      const apiJobs = [
         {
-          runId: 'run-001',
-          displayName: 'Training Run 1',
-          status: 'Completed',
-          startTimeUtc: '2024-01-01T10:00:00Z',
-          endTimeUtc: '2024-01-01T11:00:00Z',
-          experimentName: 'exp1',
-          runType: 'azureml.scriptrun',
+          name: 'run-001',
+          properties: {
+            displayName: 'Training Run 1',
+            status: 'Completed',
+            startTime: '2024-01-01T10:00:00Z',
+            endTime: '2024-01-01T11:00:00Z',
+            experimentName: 'exp1',
+            jobType: 'Command',
+          },
         },
       ];
-      const mockGet = jest.fn().mockResolvedValue({ data: { value: apiRuns } });
+      const mockGet = jest.fn().mockResolvedValue({ data: { value: apiJobs } });
       (axios.create as jest.Mock).mockReturnValue(makeClientMock(mockGet));
 
       const service = new AzureMLService(mockCredentials);
-      const runs = await service.listRuns('rg1', 'ws1');
+      const runs = await service.listJobs('rg1', 'ws1');
 
       expect(runs).toHaveLength(1);
       expect(runs[0]).toMatchObject({
@@ -129,24 +131,46 @@ describe('AzureMLService', () => {
     });
   });
 
-  describe('getRunMetrics', () => {
-    it('groups metric data points by name and sorts by step', async () => {
-      const apiMetrics = [
-        { name: 'loss', step: 2, value: 0.5, utcTimeStamp: '2024-01-01T10:02:00Z' },
-        { name: 'loss', step: 1, value: 0.8, utcTimeStamp: '2024-01-01T10:01:00Z' },
-        { name: 'accuracy', step: 1, value: 0.6, utcTimeStamp: '2024-01-01T10:01:00Z' },
-      ];
-      const mockGet = jest.fn().mockResolvedValue({ data: { value: apiMetrics } });
+  describe('getJobMetrics', () => {
+    it('returns empty metrics when no workspace location provided', async () => {
+      const mockGet = jest.fn();
       (axios.create as jest.Mock).mockReturnValue(makeClientMock(mockGet));
 
       const service = new AzureMLService(mockCredentials);
-      const metrics = await service.getRunMetrics('rg1', 'ws1', 'run-001', 'exp1');
+      const metrics = await service.getJobMetrics('rg1', 'ws1', 'run-001');
 
-      expect(Object.keys(metrics)).toContain('loss');
-      expect(Object.keys(metrics)).toContain('accuracy');
-      expect(metrics['loss'].dataPoints).toHaveLength(2);
-      expect(metrics['loss'].dataPoints[0].step).toBe(1);
-      expect(metrics['loss'].dataPoints[1].step).toBe(2);
+      expect(Object.keys(metrics)).toHaveLength(0);
+    });
+
+    it('returns empty metrics when run history API fails', async () => {
+      const mockGet = jest.fn();
+      (axios.create as jest.Mock).mockReturnValue(makeClientMock(mockGet));
+      (axios.post as jest.Mock).mockResolvedValue({
+        data: { access_token: 'tok', token_type: 'Bearer', expires_in: 3600 },
+      });
+      // Make the direct axios.get call for run history fail
+      (axios as unknown as { get: jest.Mock }).get = jest.fn().mockRejectedValue(new Error('Not found'));
+
+      const service = new AzureMLService(mockCredentials);
+      const metrics = await service.getJobMetrics('rg1', 'ws1', 'run-001', 'eastus');
+
+      expect(Object.keys(metrics)).toHaveLength(0);
+    });
+  });
+
+  describe('getJobLogFiles', () => {
+    it('returns empty array when run history API fails', async () => {
+      const mockGet = jest.fn();
+      (axios.create as jest.Mock).mockReturnValue(makeClientMock(mockGet));
+      (axios.post as jest.Mock).mockResolvedValue({
+        data: { access_token: 'tok', token_type: 'Bearer', expires_in: 3600 },
+      });
+      (axios as unknown as { get: jest.Mock }).get = jest.fn().mockRejectedValue(new Error('Not found'));
+
+      const service = new AzureMLService(mockCredentials);
+      const logs = await service.getJobLogFiles('rg1', 'ws1', 'run-001', 'eastus');
+
+      expect(logs).toEqual([]);
     });
   });
 });

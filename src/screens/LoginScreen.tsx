@@ -2,160 +2,129 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import React, { useEffect, useState } from 'react';
 import {
   Alert,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
-import { AzureCredentials, RootStackParamList } from '../types';
-import { loadCredentials, saveCredentials } from '../services/storageService';
-import { AzureMLService } from '../services/azureMLService';
+import * as AuthSession from 'expo-auth-session';
+import * as WebBrowser from 'expo-web-browser';
+import { RootStackParamList } from '../types';
+
+WebBrowser.maybeCompleteAuthSession();
+import { loadAuthTokens, saveAuthTokens } from '../services/storageService';
+import { AZURE_AUTH_URL } from '../constants';
+
+const TENANT = '5b67d09b-63c3-44d3-b2af-eaa67a77b940';
+// Replace with your Azure AD app registration Client ID (public client, no secret needed)
+const CLIENT_ID = '32ec673a-9e74-469f-9e98-1c70a34ad8f0';
+const SCOPES = ['openid', 'profile', 'offline_access', 'https://management.azure.com/user_impersonation'];
+
+const discovery: AuthSession.DiscoveryDocument = {
+  authorizationEndpoint: `${AZURE_AUTH_URL}/${TENANT}/oauth2/v2.0/authorize`,
+  tokenEndpoint: `${AZURE_AUTH_URL}/${TENANT}/oauth2/v2.0/token`,
+};
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Login'>;
 };
 
 export default function LoginScreen({ navigation }: Props) {
-  const [tenantId, setTenantId] = useState('');
-  const [clientId, setClientId] = useState('');
-  const [clientSecret, setClientSecret] = useState('');
-  const [subscriptionId, setSubscriptionId] = useState('');
   const [loading, setLoading] = useState(false);
 
+  const redirectUri = AuthSession.makeRedirectUri();
+
+  const [request, response, promptAsync] = AuthSession.useAuthRequest(
+    {
+      clientId: CLIENT_ID,
+      redirectUri,
+      scopes: SCOPES,
+      usePKCE: true,
+      responseType: AuthSession.ResponseType.Code,
+    },
+    discovery,
+  );
+
   useEffect(() => {
-    loadCredentials().then((creds) => {
-      if (creds) {
-        setTenantId(creds.tenantId);
-        setClientId(creds.clientId);
-        setSubscriptionId(creds.subscriptionId);
-        // Do not auto-populate secret; require user to re-enter for security
+    loadAuthTokens().then((tokens) => {
+      if (tokens && Date.now() < tokens.expiresAt) {
+        navigation.replace('Subscriptions');
       }
     });
-  }, []);
+  }, [navigation]);
 
-  const handleConnect = async () => {
-    if (!tenantId.trim() || !clientId.trim() || !clientSecret.trim() || !subscriptionId.trim()) {
-      Alert.alert('Validation Error', 'All fields are required.');
-      return;
+  useEffect(() => {
+    if (response?.type === 'success' && request?.codeVerifier) {
+      setLoading(true);
+      AuthSession.exchangeCodeAsync(
+        {
+          code: response.params.code,
+          clientId: CLIENT_ID,
+          redirectUri,
+          extraParams: { code_verifier: request.codeVerifier },
+        },
+        discovery,
+      )
+        .then(async (result) => {
+          await saveAuthTokens({
+            accessToken: result.accessToken,
+            refreshToken: result.refreshToken ?? undefined,
+            expiresAt: Date.now() + (result.expiresIn ?? 3600) * 1000,
+            clientId: CLIENT_ID,
+            subscriptionId: '',
+          });
+          navigation.replace('Subscriptions');
+        })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : 'Authentication failed.';
+          Alert.alert('Authentication Failed', message);
+        })
+        .finally(() => setLoading(false));
+    } else if (response?.type === 'error') {
+      Alert.alert('Authentication Error', response.error?.message ?? 'Unknown error.');
     }
-    setLoading(true);
-    const credentials: AzureCredentials = {
-      tenantId: tenantId.trim(),
-      clientId: clientId.trim(),
-      clientSecret: clientSecret.trim(),
-      subscriptionId: subscriptionId.trim(),
-    };
-    try {
-      const service = new AzureMLService(credentials);
-      await service.getAccessToken();
-      await saveCredentials(credentials);
-      navigation.replace('Workspaces');
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Authentication failed. Check your credentials.';
-      Alert.alert('Authentication Failed', message);
-    } finally {
-      setLoading(false);
-    }
+  }, [response, request, redirectUri, navigation]);
+
+  const handleSignIn = () => {
+    promptAsync();
   };
 
   return (
-    <KeyboardAvoidingView
-      style={styles.flex}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <ScrollView
-        contentContainerStyle={styles.container}
-        keyboardShouldPersistTaps="handled"
+    <View style={styles.container}>
+      <View style={styles.logoContainer}>
+        <Text style={styles.logoText}>☁️</Text>
+        <Text style={styles.title}>AML Monitor</Text>
+        <Text style={styles.subtitle}>Azure Machine Learning</Text>
+      </View>
+
+      <TouchableOpacity
+        style={[styles.button, (!request || loading) && styles.buttonDisabled]}
+        onPress={handleSignIn}
+        disabled={!request || loading}
+        accessibilityRole="button"
       >
-        <View style={styles.logoContainer}>
-          <Text style={styles.logoText}>☁️</Text>
-          <Text style={styles.title}>AML Monitor</Text>
-          <Text style={styles.subtitle}>Azure Machine Learning</Text>
-        </View>
-
-        <View style={styles.form}>
-          <Text style={styles.label}>Tenant ID</Text>
-          <TextInput
-            style={styles.input}
-            value={tenantId}
-            onChangeText={setTenantId}
-            placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-            placeholderTextColor="#A19F9D"
-            autoCapitalize="none"
-            autoCorrect={false}
-            accessibilityLabel="Tenant ID"
-          />
-
-          <Text style={styles.label}>Client ID</Text>
-          <TextInput
-            style={styles.input}
-            value={clientId}
-            onChangeText={setClientId}
-            placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-            placeholderTextColor="#A19F9D"
-            autoCapitalize="none"
-            autoCorrect={false}
-            accessibilityLabel="Client ID"
-          />
-
-          <Text style={styles.label}>Client Secret</Text>
-          <TextInput
-            style={styles.input}
-            value={clientSecret}
-            onChangeText={setClientSecret}
-            placeholder="Your service principal secret"
-            placeholderTextColor="#A19F9D"
-            secureTextEntry
-            autoCapitalize="none"
-            autoCorrect={false}
-            accessibilityLabel="Client Secret"
-          />
-
-          <Text style={styles.label}>Subscription ID</Text>
-          <TextInput
-            style={styles.input}
-            value={subscriptionId}
-            onChangeText={setSubscriptionId}
-            placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-            placeholderTextColor="#A19F9D"
-            autoCapitalize="none"
-            autoCorrect={false}
-            accessibilityLabel="Subscription ID"
-          />
-
-          <TouchableOpacity
-            style={[styles.button, loading && styles.buttonDisabled]}
-            onPress={handleConnect}
-            disabled={loading}
-            accessibilityRole="button"
-          >
-            <Text style={styles.buttonText}>{loading ? 'Connecting…' : 'Connect'}</Text>
-          </TouchableOpacity>
-        </View>
-
-        <Text style={styles.hint}>
-          Sign in with a service principal that has access to your Azure ML workspace.
+        <Text style={styles.buttonText}>
+          {loading ? 'Signing in…' : '🔑  Sign in with Microsoft'}
         </Text>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </TouchableOpacity>
+
+      <Text style={styles.hint}>
+        Sign in with your Azure account to discover subscriptions and workspaces automatically.
+      </Text>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: '#F8F8F8' },
   container: {
-    flexGrow: 1,
+    flex: 1,
     padding: 24,
     justifyContent: 'center',
+    backgroundColor: '#F8F8F8',
   },
   logoContainer: {
     alignItems: 'center',
-    marginBottom: 32,
+    marginBottom: 48,
   },
   logoText: { fontSize: 48 },
   title: {
@@ -169,39 +138,11 @@ const styles = StyleSheet.create({
     color: '#605E5C',
     marginTop: 4,
   },
-  form: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 6,
-    elevation: 3,
-  },
-  label: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#201F1E',
-    marginBottom: 4,
-    marginTop: 12,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: '#D2D0CE',
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    color: '#201F1E',
-    backgroundColor: '#FAFAFA',
-  },
   button: {
     backgroundColor: '#0078D4',
     borderRadius: 6,
     paddingVertical: 14,
     alignItems: 'center',
-    marginTop: 24,
   },
   buttonDisabled: {
     backgroundColor: '#A6CBEE',

@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { RootStackParamList, Run } from '../types';
 import { AzureMLService } from '../services/azureMLService';
-import { loadCredentials } from '../services/storageService';
+import { loadAuthTokens } from '../services/storageService';
 import { REFRESH_INTERVALS } from '../constants';
 import JobCard from '../components/JobCard';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -26,7 +26,7 @@ const STATUS_FILTERS = ['All', 'Running', 'Completed', 'Failed', 'Canceled'] as 
 type StatusFilter = (typeof STATUS_FILTERS)[number];
 
 export default function JobsListScreen({ navigation, route }: Props) {
-  const { workspaceName, resourceGroup } = route.params;
+  const { workspaceName, resourceGroup, workspaceLocation } = route.params;
   const [runs, setRuns] = useState<Run[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -38,15 +38,19 @@ export default function JobsListScreen({ navigation, route }: Props) {
     async (silent = false) => {
       if (!silent) setLoading(true);
       try {
-        const creds = await loadCredentials();
-        if (!creds) {
+        const tokens = await loadAuthTokens();
+        if (!tokens || !tokens.subscriptionId) {
           navigation.replace('Login');
           return;
         }
-        const service = new AzureMLService(creds);
-        const filter =
-          statusFilter !== 'All' ? `status eq '${statusFilter}'` : undefined;
-        const data = await service.listRuns(resourceGroup, workspaceName, filter);
+        const service = new AzureMLService({
+          accessToken: tokens.accessToken,
+          subscriptionId: tokens.subscriptionId,
+        });
+        const allJobs = await service.listJobs(resourceGroup, workspaceName);
+        const data = statusFilter === 'All'
+          ? allJobs
+          : allJobs.filter((j) => j.status === statusFilter);
         setRuns(data);
         setError(null);
       } catch (err) {
@@ -85,6 +89,7 @@ export default function JobsListScreen({ navigation, route }: Props) {
       experimentName: run.experimentName,
       workspaceName,
       resourceGroup,
+      workspaceLocation,
     });
   };
 

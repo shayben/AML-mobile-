@@ -10,11 +10,12 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { RootStackParamList, RunDetails, MetricSeries } from '../types';
+import { RootStackParamList, RunDetails, MetricSeries, LogFile, JobOutput } from '../types';
 import { AzureMLService } from '../services/azureMLService';
-import { loadCredentials } from '../services/storageService';
+import { loadAuthTokens } from '../services/storageService';
 import { REFRESH_INTERVALS, RUN_STATUS_COLORS } from '../constants';
 import MetricChart from '../components/MetricChart';
+import LogViewer from '../components/LogViewer';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
 
@@ -41,31 +42,46 @@ function getDuration(start?: string, end?: string): string {
   return `${sec}s`;
 }
 
+type TabName = 'info' | 'metrics' | 'logs' | 'outputs';
+
 export default function JobDetailsScreen({ navigation, route }: Props) {
-  const { runId, experimentName, workspaceName, resourceGroup } = route.params;
+  const { runId, experimentName, workspaceName, resourceGroup, workspaceLocation } = route.params;
   const [run, setRun] = useState<RunDetails | null>(null);
   const [metrics, setMetrics] = useState<Record<string, MetricSeries>>({});
+  const [logFiles, setLogFiles] = useState<LogFile[]>([]);
+  const [outputs, setOutputs] = useState<JobOutput[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<TabName>('info');
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const serviceRef = useRef<AzureMLService | null>(null);
 
   const fetchData = useCallback(
     async (silent = false) => {
       if (!silent) setLoading(true);
       try {
-        const creds = await loadCredentials();
-        if (!creds) {
+        const tokens = await loadAuthTokens();
+        if (!tokens || !tokens.subscriptionId) {
           navigation.replace('Login');
           return;
         }
-        const service = new AzureMLService(creds);
-        const [runDetails, runMetrics] = await Promise.all([
-          service.getRunDetails(resourceGroup, workspaceName, runId, experimentName),
-          service.getRunMetrics(resourceGroup, workspaceName, runId, experimentName),
+        const service = new AzureMLService({
+          accessToken: tokens.accessToken,
+          subscriptionId: tokens.subscriptionId,
+        });
+        serviceRef.current = service;
+
+        const [runDetails, runMetrics, runLogs, jobOutputs] = await Promise.all([
+          service.getJobDetails(resourceGroup, workspaceName, runId),
+          service.getJobMetrics(resourceGroup, workspaceName, runId, workspaceLocation),
+          service.getJobLogFiles(resourceGroup, workspaceName, runId, workspaceLocation),
+          service.getJobOutputs(resourceGroup, workspaceName, runId),
         ]);
         setRun(runDetails);
         setMetrics(runMetrics);
+        setLogFiles(runLogs);
+        setOutputs(jobOutputs);
         setError(null);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load job details.');
@@ -74,7 +90,7 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
         setRefreshing(false);
       }
     },
-    [navigation, resourceGroup, workspaceName, runId, experimentName],
+    [navigation, resourceGroup, workspaceName, runId, experimentName, workspaceLocation],
   );
 
   useEffect(() => {
@@ -103,10 +119,13 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
         style: 'destructive',
         onPress: async () => {
           try {
-            const creds = await loadCredentials();
-            if (!creds) return;
-            const service = new AzureMLService(creds);
-            await service.cancelRun(resourceGroup, workspaceName, runId, experimentName);
+            const tokens = await loadAuthTokens();
+            if (!tokens || !tokens.subscriptionId) return;
+            const service = new AzureMLService({
+              accessToken: tokens.accessToken,
+              subscriptionId: tokens.subscriptionId,
+            });
+            await service.cancelJob(resourceGroup, workspaceName, runId);
             fetchData(true);
           } catch (err) {
             Alert.alert(
@@ -132,6 +151,13 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
   const isRunning = run.status === 'Running';
   const metricNames = Object.keys(metrics);
 
+  const tabs: { key: TabName; label: string; badge?: number }[] = [
+    { key: 'info', label: 'Info' },
+    { key: 'metrics', label: 'Metrics', badge: metricNames.length },
+    { key: 'logs', label: 'Logs', badge: logFiles.length },
+    { key: 'outputs', label: 'Outputs', badge: outputs.length },
+  ];
+
   return (
     <ScrollView
       style={styles.container}
@@ -156,58 +182,134 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
         )}
       </View>
 
-      {/* Info Card */}
-      <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Job Info</Text>
-        <InfoRow label="Run ID" value={run.runId} />
-        <InfoRow label="Display Name" value={run.displayName} />
-        <InfoRow label="Experiment" value={run.experimentName} />
-        <InfoRow label="Type" value={run.runType} />
-        <InfoRow label="Target" value={run.target} />
-        <InfoRow label="Started" value={formatDate(run.startTimeUtc)} />
-        <InfoRow label="Ended" value={run.endTimeUtc ? formatDate(run.endTimeUtc) : '—'} />
-        <InfoRow
-          label="Duration"
-          value={getDuration(run.startTimeUtc, run.endTimeUtc)}
-        />
+      {/* Tab Bar */}
+      <View style={styles.tabBar}>
+        {tabs.map((tab) => (
+          <TouchableOpacity
+            key={tab.key}
+            style={[styles.tab, activeTab === tab.key && styles.tabActive]}
+            onPress={() => setActiveTab(tab.key)}
+            accessibilityRole="tab"
+          >
+            <Text style={[styles.tabText, activeTab === tab.key && styles.tabTextActive]}>
+              {tab.label}
+              {tab.badge !== undefined && tab.badge > 0 ? ` (${tab.badge})` : ''}
+            </Text>
+          </TouchableOpacity>
+        ))}
       </View>
 
-      {/* Tags */}
-      {run.tags && Object.keys(run.tags).length > 0 ? (
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Tags</Text>
-          {Object.entries(run.tags).map(([k, v]) => (
-            <InfoRow key={k} label={k} value={v} />
-          ))}
-        </View>
-      ) : null}
-
-      {/* Properties */}
-      {run.properties && Object.keys(run.properties).length > 0 ? (
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Properties</Text>
-          {Object.entries(run.properties).map(([k, v]) => (
-            <InfoRow key={k} label={k} value={v} />
-          ))}
-        </View>
-      ) : null}
-
-      {/* Metrics */}
-      <View style={styles.metricsSection}>
-        <Text style={styles.metricsTitle}>
-          Metrics {isRunning ? '(auto-refreshing)' : ''}
-          {metricNames.length > 0 ? ` — ${metricNames.length} series` : ''}
-        </Text>
-        {metricNames.length === 0 ? (
-          <View style={styles.noMetrics}>
-            <Text style={styles.noMetricsText}>No metrics recorded yet.</Text>
+      {/* Info Tab */}
+      {activeTab === 'info' && (
+        <>
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>Job Info</Text>
+            <InfoRow label="Run ID" value={run.runId} />
+            <InfoRow label="Display Name" value={run.displayName} />
+            <InfoRow label="Experiment" value={run.experimentName} />
+            <InfoRow label="Type" value={run.runType} />
+            <InfoRow label="Target" value={run.target} />
+            <InfoRow label="Started" value={formatDate(run.startTimeUtc)} />
+            <InfoRow label="Ended" value={run.endTimeUtc ? formatDate(run.endTimeUtc) : '—'} />
+            <InfoRow
+              label="Duration"
+              value={getDuration(run.startTimeUtc, run.endTimeUtc)}
+            />
           </View>
-        ) : (
-          metricNames.map((name) => (
-            <MetricChart key={name} metric={metrics[name]} />
-          ))
-        )}
-      </View>
+
+          {run.tags && Object.keys(run.tags).length > 0 ? (
+            <View style={styles.card}>
+              <Text style={styles.sectionTitle}>Tags</Text>
+              {Object.entries(run.tags).map(([k, v]) => (
+                <InfoRow key={k} label={k} value={v} />
+              ))}
+            </View>
+          ) : null}
+
+          {run.properties && Object.keys(run.properties).length > 0 ? (
+            <View style={styles.card}>
+              <Text style={styles.sectionTitle}>Properties</Text>
+              {Object.entries(run.properties).map(([k, v]) => (
+                <InfoRow key={k} label={k} value={v} />
+              ))}
+            </View>
+          ) : null}
+        </>
+      )}
+
+      {/* Metrics Tab */}
+      {activeTab === 'metrics' && (
+        <View style={styles.section}>
+          <Text style={styles.sectionHeader}>
+            Metrics {isRunning ? '(auto-refreshing)' : ''}
+            {metricNames.length > 0 ? ` — ${metricNames.length} series` : ''}
+          </Text>
+          {metricNames.length === 0 ? (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyText}>No metrics recorded yet.</Text>
+              <Text style={styles.emptyHint}>
+                Metrics appear when the job logs them via MLflow or the Azure ML SDK.
+              </Text>
+            </View>
+          ) : (
+            metricNames.map((name) => (
+              <MetricChart key={name} metric={metrics[name]} />
+            ))
+          )}
+        </View>
+      )}
+
+      {/* Logs Tab */}
+      {activeTab === 'logs' && (
+        <View style={styles.section}>
+          <Text style={styles.sectionHeader}>
+            Log Files {logFiles.length > 0 ? `— ${logFiles.length} files` : ''}
+          </Text>
+          {serviceRef.current ? (
+            <LogViewer logFiles={logFiles} service={serviceRef.current} />
+          ) : (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyText}>Loading...</Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* Outputs Tab */}
+      {activeTab === 'outputs' && (
+        <View style={styles.section}>
+          <Text style={styles.sectionHeader}>
+            Outputs {outputs.length > 0 ? `— ${outputs.length} items` : ''}
+          </Text>
+          {outputs.length === 0 ? (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyText}>No outputs defined for this job.</Text>
+            </View>
+          ) : (
+            outputs.map((output) => (
+              <View key={output.name} style={styles.outputCard}>
+                <View style={styles.outputHeader}>
+                  <Text style={styles.outputName}>{output.name}</Text>
+                  <View style={styles.outputBadge}>
+                    <Text style={styles.outputBadgeText}>{output.type}</Text>
+                  </View>
+                </View>
+                {output.uri && (
+                  <Text style={styles.outputUri} numberOfLines={3} selectable>
+                    {output.uri}
+                  </Text>
+                )}
+                {output.mode && (
+                  <Text style={styles.outputMeta}>Mode: {output.mode}</Text>
+                )}
+                {output.description && (
+                  <Text style={styles.outputMeta}>{output.description}</Text>
+                )}
+              </View>
+            ))
+          )}
+        </View>
+      )}
     </ScrollView>
   );
 }
@@ -258,6 +360,31 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F2F1',
+    paddingHorizontal: 8,
+  },
+  tab: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  tabActive: {
+    borderBottomColor: '#0078D4',
+  },
+  tabText: {
+    fontSize: 14,
+    color: '#605E5C',
+    fontWeight: '500',
+  },
+  tabTextActive: {
+    color: '#0078D4',
+    fontWeight: '600',
+  },
   card: {
     backgroundColor: '#fff',
     margin: 16,
@@ -292,24 +419,70 @@ const styles = StyleSheet.create({
     color: '#201F1E',
     flex: 1,
   },
-  metricsSection: {
+  section: {
     margin: 16,
     marginTop: 16,
   },
-  metricsTitle: {
+  sectionHeader: {
     fontSize: 15,
     fontWeight: '700',
     color: '#201F1E',
     marginBottom: 12,
   },
-  noMetrics: {
+  emptyCard: {
     backgroundColor: '#fff',
     borderRadius: 10,
     padding: 32,
     alignItems: 'center',
   },
-  noMetricsText: {
+  emptyText: {
     fontSize: 14,
+    color: '#A19F9D',
+  },
+  emptyHint: {
+    fontSize: 12,
+    color: '#C8C6C4',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  outputCard: {
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    padding: 14,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#F3F2F1',
+  },
+  outputHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  outputName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#201F1E',
+    flex: 1,
+  },
+  outputBadge: {
+    backgroundColor: '#EFF6FC',
+    borderRadius: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  outputBadgeText: {
+    fontSize: 11,
+    color: '#0078D4',
+    fontWeight: '600',
+  },
+  outputUri: {
+    fontSize: 11,
+    color: '#605E5C',
+    fontFamily: 'monospace',
+    marginBottom: 4,
+  },
+  outputMeta: {
+    fontSize: 12,
     color: '#A19F9D',
   },
 });

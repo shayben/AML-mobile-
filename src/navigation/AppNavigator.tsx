@@ -3,6 +3,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import LoginScreen from '../screens/LoginScreen';
+import SubscriptionsScreen from '../screens/SubscriptionsScreen';
 import WorkspacesScreen from '../screens/WorkspacesScreen';
 import JobsListScreen from '../screens/JobsListScreen';
 import JobDetailsScreen from '../screens/JobDetailsScreen';
@@ -26,9 +27,14 @@ export default function AppNavigator() {
           options={{ title: 'AML Monitor', headerShown: false }}
         />
         <Stack.Screen
+          name="Subscriptions"
+          component={SubscriptionsScreen}
+          options={{ title: 'Subscriptions', headerLeft: () => null }}
+        />
+        <Stack.Screen
           name="Workspaces"
           component={WorkspacesScreen}
-          options={{ title: 'Workspaces', headerLeft: () => null }}
+          options={{ title: 'Workspaces' }}
         />
         <Stack.Screen
           name="Jobs"

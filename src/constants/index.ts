@@ -2,11 +2,10 @@ export const AZURE_AUTH_URL = 'https://login.microsoftonline.com';
 export const AZURE_MANAGEMENT_URL = 'https://management.azure.com';
 export const AZURE_ML_SCOPE = 'https://management.azure.com/.default';
 export const AZURE_ML_API_VERSION = '2023-10-01';
-// The metrics/runs API is only available in the preview version; no GA equivalent exists yet.
-export const AZURE_ML_METRICS_API_VERSION = '2020-09-01-preview';
 
 export const STORAGE_KEYS = {
   CREDENTIALS: '@aml_credentials',
+  AUTH_TOKENS: '@aml_auth_tokens',
   SELECTED_WORKSPACE: '@aml_selected_workspace',
 } as const;
 

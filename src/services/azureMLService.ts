@@ -3,16 +3,16 @@ import {
   AZURE_AUTH_URL,
   AZURE_MANAGEMENT_URL,
   AZURE_ML_API_VERSION,
-  AZURE_ML_METRICS_API_VERSION,
   AZURE_ML_SCOPE,
 } from '../constants';
 import {
   AzureCredentials,
-  Experiment,
-  MetricDataPoint,
+  JobOutput,
+  LogFile,
   MetricSeries,
   Run,
   RunDetails,
+  Subscription,
   Workspace,
 } from '../types';
 
@@ -23,13 +23,24 @@ interface TokenResponse {
 }
 
 export class AzureMLService {
-  private credentials: AzureCredentials;
+  private credentials: AzureCredentials | null = null;
   private accessToken: string | null = null;
   private tokenExpiresAt: number = 0;
   private client: AxiosInstance;
 
-  constructor(credentials: AzureCredentials) {
-    this.credentials = credentials;
+  constructor(credentialsOrToken: AzureCredentials | { accessToken: string; subscriptionId: string }) {
+    if ('accessToken' in credentialsOrToken) {
+      this.accessToken = credentialsOrToken.accessToken;
+      this.tokenExpiresAt = Date.now() + 3600000;
+      this.credentials = {
+        tenantId: '',
+        clientId: '',
+        clientSecret: '',
+        subscriptionId: credentialsOrToken.subscriptionId,
+      };
+    } else {
+      this.credentials = credentialsOrToken;
+    }
     this.client = axios.create({ baseURL: AZURE_MANAGEMENT_URL });
     this.client.interceptors.request.use(async (config) => {
       const token = await this.getAccessToken();
@@ -38,9 +49,17 @@ export class AzureMLService {
     });
   }
 
+  get subscriptionId(): string {
+    return this.credentials?.subscriptionId ?? '';
+  }
+
   async getAccessToken(): Promise<string> {
     if (this.accessToken && Date.now() < this.tokenExpiresAt - 60000) {
       return this.accessToken;
+    }
+
+    if (!this.credentials?.clientSecret) {
+      throw new Error('Token expired. Please sign in again.');
     }
 
     const url = `${AZURE_AUTH_URL}/${this.credentials.tenantId}/oauth2/v2.0/token`;
@@ -60,8 +79,21 @@ export class AzureMLService {
     return this.accessToken;
   }
 
+  async listSubscriptions(): Promise<Subscription[]> {
+    const response = await this.client.get('/subscriptions', {
+      params: { 'api-version': '2022-12-01' },
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (response.data.value || []).map((sub: any): Subscription => ({
+      subscriptionId: sub.subscriptionId,
+      displayName: sub.displayName,
+      state: sub.state,
+    }));
+  }
+
   async listWorkspaces(): Promise<Workspace[]> {
-    const url = `/subscriptions/${this.credentials.subscriptionId}/providers/Microsoft.MachineLearningServices/workspaces`;
+    const url = `/subscriptions/${this.subscriptionId}/providers/Microsoft.MachineLearningServices/workspaces`;
     const response = await this.client.get(url, {
       params: { 'api-version': AZURE_ML_API_VERSION },
     });
@@ -72,134 +104,236 @@ export class AzureMLService {
       name: ws.name,
       resourceGroup: ws.id.split('/')[4],
       location: ws.location,
-      subscriptionId: this.credentials.subscriptionId,
+      subscriptionId: this.subscriptionId,
     }));
   }
 
-  async listExperiments(resourceGroup: string, workspaceName: string): Promise<Experiment[]> {
-    const base = this.buildWorkspacePath(resourceGroup, workspaceName);
-    const url = `${base}/experiments`;
-    const response = await this.client.get(url, {
-      params: { 'api-version': AZURE_ML_METRICS_API_VERSION },
-    });
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (response.data.value || []).map((exp: any): Experiment => ({
-      experimentId: exp.experimentId || exp.name,
-      name: exp.name,
-      description: exp.description,
-      createdUtc: exp.createdUtc,
-      lastModifiedUtc: exp.lastModifiedUtc,
-    }));
-  }
-
-  async listRuns(
+  async listJobs(
     resourceGroup: string,
     workspaceName: string,
-    filter?: string,
   ): Promise<Run[]> {
     const base = this.buildWorkspacePath(resourceGroup, workspaceName);
-    const url = `${base}/runs`;
-    const params: Record<string, string> = {
-      'api-version': AZURE_ML_METRICS_API_VERSION,
-    };
-    if (filter) params['$filter'] = filter;
-
-    const response = await this.client.get(url, { params });
+    const url = `${base}/jobs`;
+    const response = await this.client.get(url, {
+      params: { 'api-version': AZURE_ML_API_VERSION },
+    });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (response.data.value || []).map((run: any): Run => ({
-      runId: run.runId,
-      displayName: run.displayName || run.runId,
-      status: run.status,
-      startTimeUtc: run.startTimeUtc,
-      endTimeUtc: run.endTimeUtc,
-      experimentName: run.experimentName || run.experiment || '',
-      runType: run.runType,
-      tags: run.tags,
-      properties: run.properties,
+    return (response.data.value || []).map((job: any): Run => ({
+      runId: job.name,
+      displayName: job.properties?.displayName || job.name,
+      status: job.properties?.status,
+      startTimeUtc: job.properties?.startTime || job.systemData?.createdAt,
+      endTimeUtc: job.properties?.endTime,
+      experimentName: job.properties?.experimentName || '',
+      runType: job.properties?.jobType,
+      tags: job.properties?.tags,
+      properties: job.properties?.properties,
     }));
   }
 
-  async getRunDetails(
+  async getJobDetails(
     resourceGroup: string,
     workspaceName: string,
-    runId: string,
-    experimentName: string,
+    jobName: string,
   ): Promise<RunDetails> {
     const base = this.buildWorkspacePath(resourceGroup, workspaceName);
-    const url = `${base}/experiments/${encodeURIComponent(experimentName)}/runs/${encodeURIComponent(runId)}`;
+    const url = `${base}/jobs/${encodeURIComponent(jobName)}`;
     const response = await this.client.get(url, {
-      params: { 'api-version': AZURE_ML_METRICS_API_VERSION },
+      params: { 'api-version': AZURE_ML_API_VERSION },
     });
-    const run = response.data;
+    const job = response.data;
 
     return {
-      runId: run.runId,
-      displayName: run.displayName || run.runId,
-      status: run.status,
-      startTimeUtc: run.startTimeUtc,
-      endTimeUtc: run.endTimeUtc,
-      experimentName: experimentName,
-      runType: run.runType,
-      tags: run.tags,
-      properties: run.properties,
-      description: run.description,
-      target: run.target,
-      logFiles: run.logFiles,
+      runId: job.name,
+      displayName: job.properties?.displayName || job.name,
+      status: job.properties?.status,
+      startTimeUtc: job.properties?.startTime || job.systemData?.createdAt,
+      endTimeUtc: job.properties?.endTime,
+      experimentName: job.properties?.experimentName || '',
+      runType: job.properties?.jobType,
+      tags: job.properties?.tags,
+      properties: job.properties?.properties,
+      description: job.properties?.description,
+      target: job.properties?.computeId?.split('/').pop(),
     };
   }
 
-  async getRunMetrics(
+  async getJobMetrics(
     resourceGroup: string,
     workspaceName: string,
-    runId: string,
-    experimentName: string,
+    jobName: string,
+    workspaceLocation?: string,
   ): Promise<Record<string, MetricSeries>> {
-    const base = this.buildWorkspacePath(resourceGroup, workspaceName);
-    const url = `${base}/experiments/${encodeURIComponent(experimentName)}/runs/${encodeURIComponent(runId)}/metrics`;
-    const response = await this.client.get(url, {
-      params: { 'api-version': AZURE_ML_METRICS_API_VERSION },
-    });
+    if (!workspaceLocation) return {};
 
-    const metricsMap: Record<string, MetricSeries> = {};
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const metrics: any[] = response.data.value || [];
+    try {
+      const historyBase = this.buildRunHistoryPath(
+        workspaceLocation,
+        resourceGroup,
+        workspaceName,
+      );
+      const token = await this.getAccessToken();
 
-    for (const metric of metrics) {
-      const name: string = metric.name;
-      if (!metricsMap[name]) {
-        metricsMap[name] = { name, dataPoints: [] };
+      // Try the run metrics endpoint
+      const response = await axios.get(
+        `${historyBase}/runmetrics`,
+        {
+          params: { 'runId': jobName },
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+
+      const result: Record<string, MetricSeries> = {};
+      const metricsData = response.data?.value || response.data?.metrics || [];
+
+      if (Array.isArray(metricsData)) {
+        for (const m of metricsData) {
+          const name = m.metricName || m.name;
+          if (!name) continue;
+
+          if (!result[name]) {
+            result[name] = { name, dataPoints: [] };
+          }
+
+          if (m.cells) {
+            // Tabular format: cells is an array of {metricName, step, value, timestamp}
+            for (const cell of m.cells) {
+              result[name].dataPoints.push({
+                step: cell.step ?? result[name].dataPoints.length,
+                value: typeof cell[name] === 'number' ? cell[name] : (cell.value ?? 0),
+                timestamp: cell.timestamp || cell.createdUtc || '',
+              });
+            }
+          } else {
+            result[name].dataPoints.push({
+              step: m.step ?? 0,
+              value: m.value ?? m.numerator ?? 0,
+              timestamp: m.createdUtc || m.timestamp || '',
+            });
+          }
+        }
+      } else if (typeof response.data === 'object') {
+        // Handle dict-style response {metricName: [{step, value}]}
+        for (const [name, values] of Object.entries(response.data)) {
+          if (name.startsWith('$') || name === 'runId') continue;
+          if (Array.isArray(values)) {
+            result[name] = {
+              name,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              dataPoints: (values as any[]).map((v, i) => ({
+                step: v.step ?? i,
+                value: v.value ?? v ?? 0,
+                timestamp: v.timestamp || '',
+              })),
+            };
+          }
+        }
       }
-      const dataPoint: MetricDataPoint = {
-        step: metric.step ?? metricsMap[name].dataPoints.length,
-        value: metric.value ?? (Array.isArray(metric.cells) ? metric.cells[0]?.value : metric.value),
-        timestamp: metric.utcTimeStamp || metric.createdUtc || new Date().toISOString(),
-      };
-      metricsMap[name].dataPoints.push(dataPoint);
-    }
 
-    for (const key of Object.keys(metricsMap)) {
-      metricsMap[key].dataPoints.sort((a, b) => a.step - b.step);
+      return result;
+    } catch {
+      // Fall back to empty metrics if run history API is unavailable
+      return {};
     }
-
-    return metricsMap;
   }
 
-  async cancelRun(
+  async getJobLogFiles(
     resourceGroup: string,
     workspaceName: string,
-    runId: string,
-    experimentName: string,
+    jobName: string,
+    workspaceLocation: string,
+  ): Promise<LogFile[]> {
+    try {
+      const historyBase = this.buildRunHistoryPath(
+        workspaceLocation,
+        resourceGroup,
+        workspaceName,
+      );
+      const token = await this.getAccessToken();
+
+      const response = await axios.get(
+        `${historyBase}/runs/${encodeURIComponent(jobName)}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+
+      const logFiles: Record<string, string> = response.data?.logFiles || {};
+      return Object.entries(logFiles).map(([name, url]) => ({
+        name,
+        url,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  async getLogContent(url: string): Promise<string> {
+    try {
+      const response = await axios.get(url, {
+        responseType: 'text',
+        timeout: 15000,
+      });
+      return typeof response.data === 'string'
+        ? response.data
+        : JSON.stringify(response.data, null, 2);
+    } catch {
+      return '[Failed to load log content]';
+    }
+  }
+
+  async getJobOutputs(
+    resourceGroup: string,
+    workspaceName: string,
+    jobName: string,
+  ): Promise<JobOutput[]> {
+    try {
+      const base = this.buildWorkspacePath(resourceGroup, workspaceName);
+      const url = `${base}/jobs/${encodeURIComponent(jobName)}`;
+      const response = await this.client.get(url, {
+        params: { 'api-version': AZURE_ML_API_VERSION },
+      });
+
+      const outputs = response.data?.properties?.outputs || {};
+      return Object.entries(outputs).map(([name, val]: [string, unknown]) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const v = val as any;
+        return {
+          name,
+          type: v?.jobOutputType || v?.type || 'unknown',
+          uri: v?.uri || v?.assetId || undefined,
+          description: v?.description || undefined,
+          mode: v?.mode || undefined,
+        };
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  async cancelJob(
+    resourceGroup: string,
+    workspaceName: string,
+    jobName: string,
   ): Promise<void> {
     const base = this.buildWorkspacePath(resourceGroup, workspaceName);
-    const url = `${base}/experiments/${encodeURIComponent(experimentName)}/runs/${encodeURIComponent(runId)}/cancel`;
+    const url = `${base}/jobs/${encodeURIComponent(jobName)}/cancel`;
     await this.client.post(url, {}, {
-      params: { 'api-version': AZURE_ML_METRICS_API_VERSION },
+      params: { 'api-version': AZURE_ML_API_VERSION },
     });
   }
 
   private buildWorkspacePath(resourceGroup: string, workspaceName: string): string {
-    return `/subscriptions/${this.credentials.subscriptionId}/resourceGroups/${resourceGroup}/providers/Microsoft.MachineLearningServices/workspaces/${workspaceName}`;
+    return `/subscriptions/${this.subscriptionId}/resourceGroups/${resourceGroup}/providers/Microsoft.MachineLearningServices/workspaces/${workspaceName}`;
+  }
+
+  private buildRunHistoryPath(
+    location: string,
+    resourceGroup: string,
+    workspaceName: string,
+  ): string {
+    const region = location.toLowerCase().replace(/\s/g, '');
+    return `https://${region}.api.azureml.ms/history/v1.0/subscriptions/${this.subscriptionId}/resourceGroups/${resourceGroup}/providers/Microsoft.MachineLearningServices/workspaces/${workspaceName}`;
   }
 }

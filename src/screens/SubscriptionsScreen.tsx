@@ -8,38 +8,35 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { RootStackParamList, Workspace } from '../types';
+import { RootStackParamList, Subscription } from '../types';
 import { AzureMLService } from '../services/azureMLService';
-import { clearAuthTokens, loadAuthTokens } from '../services/storageService';
+import { clearAuthTokens, loadAuthTokens, saveAuthTokens } from '../services/storageService';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
 
 type Props = {
-  navigation: NativeStackNavigationProp<RootStackParamList, 'Workspaces'>;
+  navigation: NativeStackNavigationProp<RootStackParamList, 'Subscriptions'>;
 };
 
-export default function WorkspacesScreen({ navigation }: Props) {
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+export default function SubscriptionsScreen({ navigation }: Props) {
+  const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchWorkspaces = useCallback(async () => {
+  const fetchSubscriptions = useCallback(async () => {
     try {
       const tokens = await loadAuthTokens();
-      if (!tokens || !tokens.subscriptionId) {
+      if (!tokens) {
         navigation.replace('Login');
         return;
       }
-      const service = new AzureMLService({
-        accessToken: tokens.accessToken,
-        subscriptionId: tokens.subscriptionId,
-      });
-      const data = await service.listWorkspaces();
-      setWorkspaces(data);
+      const service = new AzureMLService({ accessToken: tokens.accessToken, subscriptionId: '' });
+      const data = await service.listSubscriptions();
+      setSubscriptions(data.filter((s) => s.state === 'Enabled'));
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load workspaces.');
+      setError(err instanceof Error ? err.message : 'Failed to load subscriptions.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -47,25 +44,12 @@ export default function WorkspacesScreen({ navigation }: Props) {
   }, [navigation]);
 
   useEffect(() => {
-    fetchWorkspaces();
-  }, [fetchWorkspaces]);
+    fetchSubscriptions();
+  }, [fetchSubscriptions]);
 
   const handleLogout = async () => {
     await clearAuthTokens();
     navigation.replace('Login');
-  };
-
-  const handleRefresh = () => {
-    setRefreshing(true);
-    fetchWorkspaces();
-  };
-
-  const handleSelectWorkspace = (ws: Workspace) => {
-    navigation.navigate('Jobs', {
-      workspaceName: ws.name,
-      resourceGroup: ws.resourceGroup,
-      workspaceLocation: ws.location,
-    });
   };
 
   useEffect(() => {
@@ -84,36 +68,50 @@ export default function WorkspacesScreen({ navigation }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigation]);
 
-  if (loading) return <LoadingSpinner message="Loading workspaces…" />;
-  if (error) return <ErrorMessage message={error} onRetry={fetchWorkspaces} />;
+  const handleRefresh = () => {
+    setRefreshing(true);
+    fetchSubscriptions();
+  };
+
+  const handleSelectSubscription = async (sub: Subscription) => {
+    const tokens = await loadAuthTokens();
+    if (!tokens) {
+      navigation.replace('Login');
+      return;
+    }
+    await saveAuthTokens({ ...tokens, subscriptionId: sub.subscriptionId });
+    navigation.navigate('Workspaces');
+  };
+
+  if (loading) return <LoadingSpinner message="Loading subscriptions…" />;
+  if (error) return <ErrorMessage message={error} onRetry={fetchSubscriptions} />;
 
   return (
     <FlatList
-      data={workspaces}
-      keyExtractor={(item) => item.id}
+      data={subscriptions}
+      keyExtractor={(item) => item.subscriptionId}
       contentContainerStyle={styles.list}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
       ListHeaderComponent={
         <Text style={styles.header}>
-          {workspaces.length} workspace{workspaces.length !== 1 ? 's' : ''}
+          {subscriptions.length} subscription{subscriptions.length !== 1 ? 's' : ''}
         </Text>
       }
       ListEmptyComponent={
         <View style={styles.empty}>
-          <Text style={styles.emptyText}>No workspaces found in this subscription.</Text>
+          <Text style={styles.emptyText}>No enabled subscriptions found.</Text>
         </View>
       }
       renderItem={({ item }) => (
         <TouchableOpacity
           style={styles.card}
-          onPress={() => handleSelectWorkspace(item)}
+          onPress={() => handleSelectSubscription(item)}
           activeOpacity={0.7}
           accessibilityRole="button"
-          accessibilityLabel={`Workspace ${item.name}`}
+          accessibilityLabel={`Subscription ${item.displayName}`}
         >
-          <Text style={styles.workspaceName}>{item.name}</Text>
-          <Text style={styles.resourceGroup}>Resource Group: {item.resourceGroup}</Text>
-          <Text style={styles.location}>📍 {item.location}</Text>
+          <Text style={styles.subscriptionName}>{item.displayName}</Text>
+          <Text style={styles.subscriptionId}>{item.subscriptionId}</Text>
         </TouchableOpacity>
       )}
     />
@@ -142,18 +140,13 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
-  workspaceName: {
+  subscriptionName: {
     fontSize: 17,
     fontWeight: '600',
     color: '#201F1E',
     marginBottom: 4,
   },
-  resourceGroup: {
-    fontSize: 13,
-    color: '#605E5C',
-    marginBottom: 4,
-  },
-  location: {
+  subscriptionId: {
     fontSize: 12,
     color: '#A19F9D',
   },
