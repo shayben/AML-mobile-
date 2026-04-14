@@ -12,7 +12,7 @@ import {
 import { BarChart } from 'react-native-chart-kit';
 import { RootStackParamList, MonthlyCostSummary, CostForecast, CostBreakdownItem } from '../types';
 import { AzureMLService } from '../services/azureMLService';
-import { loadAuthTokens } from '../services/storageService';
+import { loadAuthTokens, getCached, setCache } from '../services/storageService';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
 
@@ -41,7 +41,7 @@ export default function CostsScreen({ navigation }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const fetchCosts = useCallback(
-    async (silent = false) => {
+    async (silent = false, bypassCache = false) => {
       if (!silent) setLoading(true);
       try {
         const tokens = await loadAuthTokens();
@@ -49,27 +49,49 @@ export default function CostsScreen({ navigation }: Props) {
           navigation.replace('Login');
           return;
         }
+
+        const cacheKey = `costs:${tokens.subscriptionId}`;
+
+        // Try cache first (15-min TTL)
+        if (!bypassCache) {
+          const cached = await getCached<{
+            current: MonthlyCostSummary;
+            prev: MonthlyCostSummary | null;
+            forecast: CostForecast;
+            trend: MonthlyCostSummary[];
+          }>(cacheKey);
+          if (cached) {
+            setCurrentMonth(cached.current);
+            setPrevMonth(cached.prev);
+            setForecast(cached.forecast);
+            setMonthlyTrend(cached.trend);
+            setError(null);
+            setLoading(false);
+            setRefreshing(false);
+            return;
+          }
+        }
+
         const service = new AzureMLService({
           accessToken: tokens.accessToken,
           subscriptionId: tokens.subscriptionId,
         });
 
         // Serialize all cost queries to avoid 429 rate limits
-        // 1. Current month details (3 sequential sub-queries inside)
         const current = await service.getMonthlyCosts(0);
         setCurrentMonth(current);
 
-        // 2. 6-month trend (1 query)
         const trend = await service.getMultiMonthCosts(6);
         setMonthlyTrend(trend);
 
-        // Extract previous month from trend to avoid extra API call
         const prevFromTrend = trend.length >= 2 ? trend[trend.length - 2] : null;
         setPrevMonth(prevFromTrend);
 
-        // 3. Forecast (1 query)
         const fcast = await service.getCostForecast();
         setForecast(fcast);
+
+        // Cache the results
+        await setCache(cacheKey, { current, prev: prevFromTrend, forecast: fcast, trend });
         setError(null);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load cost data.');
@@ -87,7 +109,7 @@ export default function CostsScreen({ navigation }: Props) {
 
   const handleRefresh = () => {
     setRefreshing(true);
-    fetchCosts(true);
+    fetchCosts(true, true);
   };
 
   if (loading) return <LoadingSpinner message="Loading cost data…" />;

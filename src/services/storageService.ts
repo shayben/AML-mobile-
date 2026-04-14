@@ -52,3 +52,31 @@ export async function loadSelectedWorkspace(): Promise<Workspace | null> {
     return null;
   }
 }
+
+// Generic cache with TTL (default 15 minutes)
+const CACHE_TTL_MS = 15 * 60 * 1000;
+
+interface CacheEntry<T> {
+  data: T;
+  timestamp: number;
+}
+
+export async function getCached<T>(key: string): Promise<T | null> {
+  try {
+    const raw = await AsyncStorage.getItem(`cache:${key}`);
+    if (!raw) return null;
+    const entry: CacheEntry<T> = JSON.parse(raw);
+    if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
+      await AsyncStorage.removeItem(`cache:${key}`);
+      return null;
+    }
+    return entry.data;
+  } catch {
+    return null;
+  }
+}
+
+export async function setCache<T>(key: string, data: T): Promise<void> {
+  const entry: CacheEntry<T> = { data, timestamp: Date.now() };
+  await AsyncStorage.setItem(`cache:${key}`, JSON.stringify(entry));
+}
