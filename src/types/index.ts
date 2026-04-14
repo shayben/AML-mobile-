@@ -11,6 +11,7 @@ export interface AuthTokens {
   refreshToken?: string;
   expiresAt: number;
   clientId: string;
+  tenantId: string;
   subscriptionId: string;
 }
 

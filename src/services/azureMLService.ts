@@ -31,13 +31,26 @@ export class AzureMLService {
   private credentials: AzureCredentials | null = null;
   private accessToken: string | null = null;
   private mlAccessToken: string | null = null;
+  private refreshToken: string | null = null;
+  private clientId: string | null = null;
+  private tenantId: string | null = null;
   private tokenExpiresAt: number = 0;
   private client: AxiosInstance;
 
-  constructor(credentialsOrToken: AzureCredentials | { accessToken: string; mlAccessToken?: string; subscriptionId: string }) {
+  constructor(credentialsOrToken: AzureCredentials | {
+    accessToken: string;
+    mlAccessToken?: string;
+    refreshToken?: string;
+    clientId?: string;
+    tenantId?: string;
+    subscriptionId: string;
+  }) {
     if ('accessToken' in credentialsOrToken) {
       this.accessToken = credentialsOrToken.accessToken;
       this.mlAccessToken = credentialsOrToken.mlAccessToken ?? null;
+      this.refreshToken = credentialsOrToken.refreshToken ?? null;
+      this.clientId = credentialsOrToken.clientId ?? null;
+      this.tenantId = credentialsOrToken.tenantId ?? null;
       this.tokenExpiresAt = Date.now() + 3600000;
       this.credentials = {
         tenantId: '',
@@ -84,6 +97,36 @@ export class AzureMLService {
     this.accessToken = response.data.access_token;
     this.tokenExpiresAt = Date.now() + response.data.expires_in * 1000;
     return this.accessToken;
+  }
+
+  // Get a token suitable for the ML dataplane API, trying multiple strategies
+  private async getMlToken(): Promise<string> {
+    if (this.mlAccessToken) return this.mlAccessToken;
+
+    // Try acquiring via refresh token
+    if (this.refreshToken && this.clientId && this.tenantId) {
+      try {
+        const url = `${AZURE_AUTH_URL}/${this.tenantId}/oauth2/v2.0/token`;
+        const body = new URLSearchParams({
+          grant_type: 'refresh_token',
+          client_id: this.clientId,
+          refresh_token: this.refreshToken,
+          scope: 'https://ml.azure.com/.default offline_access',
+        });
+        const resp = await axios.post(url, body.toString(), {
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        });
+        if (resp.data?.access_token) {
+          this.mlAccessToken = resp.data.access_token;
+          return this.mlAccessToken!;
+        }
+      } catch {
+        // Fall through to management token fallback
+      }
+    }
+
+    // Fallback: use the management token (works for some tenant configurations)
+    return this.getAccessToken();
   }
 
   async listSubscriptions(): Promise<Subscription[]> {
@@ -172,21 +215,21 @@ export class AzureMLService {
     jobName: string,
     workspaceLocation?: string,
   ): Promise<Record<string, MetricSeries>> {
-    if (!workspaceLocation || !this.mlAccessToken) return {};
+    if (!workspaceLocation) return {};
+
+    const token = await this.getMlToken();
+    const historyBase = this.buildRunHistoryPath(
+      workspaceLocation,
+      resourceGroup,
+      workspaceName,
+    );
 
     try {
-      const historyBase = this.buildRunHistoryPath(
-        workspaceLocation,
-        resourceGroup,
-        workspaceName,
-      );
-
-      // Try the run metrics endpoint using ML dataplane token
       const response = await axios.get(
         `${historyBase}/runmetrics`,
         {
           params: { 'runId': jobName },
-          headers: { Authorization: `Bearer ${this.mlAccessToken}` },
+          headers: { Authorization: `Bearer ${token}` },
         },
       );
 
@@ -203,7 +246,6 @@ export class AzureMLService {
           }
 
           if (m.cells) {
-            // Tabular format: cells is an array of {metricName, step, value, timestamp}
             for (const cell of m.cells) {
               result[name].dataPoints.push({
                 step: cell.step ?? result[name].dataPoints.length,
@@ -220,7 +262,6 @@ export class AzureMLService {
           }
         }
       } else if (typeof response.data === 'object') {
-        // Handle dict-style response {metricName: [{step, value}]}
         for (const [name, values] of Object.entries(response.data)) {
           if (name.startsWith('$') || name === 'runId') continue;
           if (Array.isArray(values)) {
@@ -239,7 +280,6 @@ export class AzureMLService {
 
       return result;
     } catch {
-      // Fall back to empty metrics if run history API is unavailable
       return {};
     }
   }
@@ -250,19 +290,18 @@ export class AzureMLService {
     jobName: string,
     workspaceLocation: string,
   ): Promise<LogFile[]> {
-    if (!this.mlAccessToken) return [];
+    const token = await this.getMlToken();
+    const historyBase = this.buildRunHistoryPath(
+      workspaceLocation,
+      resourceGroup,
+      workspaceName,
+    );
 
     try {
-      const historyBase = this.buildRunHistoryPath(
-        workspaceLocation,
-        resourceGroup,
-        workspaceName,
-      );
-
       const response = await axios.get(
         `${historyBase}/runs/${encodeURIComponent(jobName)}`,
         {
-          headers: { Authorization: `Bearer ${this.mlAccessToken}` },
+          headers: { Authorization: `Bearer ${token}` },
         },
       );
 

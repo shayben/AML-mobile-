@@ -171,6 +171,7 @@ export default function LoginScreen({ navigation }: Props) {
         refreshToken: data.refresh_token ?? undefined,
         expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000,
         clientId: CLIENT_ID,
+        tenantId: TENANT,
         subscriptionId: '',
       });
       navigation.replace('Subscriptions');
