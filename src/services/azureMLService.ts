@@ -30,12 +30,14 @@ interface TokenResponse {
 export class AzureMLService {
   private credentials: AzureCredentials | null = null;
   private accessToken: string | null = null;
+  private mlAccessToken: string | null = null;
   private tokenExpiresAt: number = 0;
   private client: AxiosInstance;
 
-  constructor(credentialsOrToken: AzureCredentials | { accessToken: string; subscriptionId: string }) {
+  constructor(credentialsOrToken: AzureCredentials | { accessToken: string; mlAccessToken?: string; subscriptionId: string }) {
     if ('accessToken' in credentialsOrToken) {
       this.accessToken = credentialsOrToken.accessToken;
+      this.mlAccessToken = credentialsOrToken.mlAccessToken ?? null;
       this.tokenExpiresAt = Date.now() + 3600000;
       this.credentials = {
         tenantId: '',
@@ -170,7 +172,7 @@ export class AzureMLService {
     jobName: string,
     workspaceLocation?: string,
   ): Promise<Record<string, MetricSeries>> {
-    if (!workspaceLocation) return {};
+    if (!workspaceLocation || !this.mlAccessToken) return {};
 
     try {
       const historyBase = this.buildRunHistoryPath(
@@ -178,14 +180,13 @@ export class AzureMLService {
         resourceGroup,
         workspaceName,
       );
-      const token = await this.getAccessToken();
 
-      // Try the run metrics endpoint
+      // Try the run metrics endpoint using ML dataplane token
       const response = await axios.get(
         `${historyBase}/runmetrics`,
         {
           params: { 'runId': jobName },
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { Authorization: `Bearer ${this.mlAccessToken}` },
         },
       );
 
@@ -249,18 +250,19 @@ export class AzureMLService {
     jobName: string,
     workspaceLocation: string,
   ): Promise<LogFile[]> {
+    if (!this.mlAccessToken) return [];
+
     try {
       const historyBase = this.buildRunHistoryPath(
         workspaceLocation,
         resourceGroup,
         workspaceName,
       );
-      const token = await this.getAccessToken();
 
       const response = await axios.get(
         `${historyBase}/runs/${encodeURIComponent(jobName)}`,
         {
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { Authorization: `Bearer ${this.mlAccessToken}` },
         },
       );
 
@@ -336,9 +338,9 @@ export class AzureMLService {
       },
     };
 
-    // Fetch daily costs + by resource group + by meter category in parallel
+    // 3 queries for current month details (daily, by RG, by meter)
     const [dailyResp, rgResp, meterResp] = await Promise.all([
-      this.client.post(`${costBase}/query`, {
+      this.costQueryWithRetry(costBase, {
         type: 'ActualCost',
         timeframe: 'Custom',
         timePeriod: { from, to },
@@ -347,9 +349,9 @@ export class AzureMLService {
           aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
           filter: mlFilter,
         },
-      }, { params: { 'api-version': AZURE_COST_API_VERSION } }),
+      }),
 
-      this.client.post(`${costBase}/query`, {
+      this.costQueryWithRetry(costBase, {
         type: 'ActualCost',
         timeframe: 'Custom',
         timePeriod: { from, to },
@@ -359,9 +361,9 @@ export class AzureMLService {
           grouping: [{ type: 'Dimension', name: 'ResourceGroupName' }],
           filter: mlFilter,
         },
-      }, { params: { 'api-version': AZURE_COST_API_VERSION } }),
+      }),
 
-      this.client.post(`${costBase}/query`, {
+      this.costQueryWithRetry(costBase, {
         type: 'ActualCost',
         timeframe: 'Custom',
         timePeriod: { from, to },
@@ -371,12 +373,12 @@ export class AzureMLService {
           grouping: [{ type: 'Dimension', name: 'MeterCategory' }],
           filter: mlFilter,
         },
-      }, { params: { 'api-version': AZURE_COST_API_VERSION } }),
+      }),
     ]);
 
-    const dailyCosts = this.parseCostRows(dailyResp.data, 'daily');
-    const byResourceGroup = this.parseCostRows(rgResp.data, 'grouped') as CostBreakdownItem[];
-    const byMeterCategory = this.parseCostRows(meterResp.data, 'grouped') as CostBreakdownItem[];
+    const dailyCosts = this.parseCostRows(dailyResp, 'daily');
+    const byResourceGroup = this.parseCostRows(rgResp, 'grouped') as CostBreakdownItem[];
+    const byMeterCategory = this.parseCostRows(meterResp, 'grouped') as CostBreakdownItem[];
 
     const totalCost = (dailyCosts as CostDataPoint[]).reduce((sum, d) => sum + d.cost, 0);
     const currency = (dailyCosts as CostDataPoint[])[0]?.currency
@@ -406,7 +408,7 @@ export class AzureMLService {
 
     try {
       const costBase = `/subscriptions/${this.subscriptionId}/providers/Microsoft.CostManagement`;
-      const response = await this.client.post(`${costBase}/forecast`, {
+      const data = await this.costQueryWithRetry(costBase, {
         type: 'ActualCost',
         timeframe: 'Custom',
         timePeriod: { from, to },
@@ -421,9 +423,9 @@ export class AzureMLService {
             },
           },
         },
-      }, { params: { 'api-version': AZURE_COST_API_VERSION } });
+      }, true);
 
-      const dailyForecast = this.parseCostRows(response.data, 'daily') as CostDataPoint[];
+      const dailyForecast = this.parseCostRows(data, 'daily') as CostDataPoint[];
       const estimatedCost = dailyForecast.reduce((sum, d) => sum + d.cost, 0);
       const currency = dailyForecast[0]?.currency || 'USD';
 
@@ -434,17 +436,65 @@ export class AzureMLService {
   }
 
   async getMultiMonthCosts(months = 6): Promise<MonthlyCostSummary[]> {
-    const results: MonthlyCostSummary[] = [];
-    // Fetch sequentially to avoid rate limiting
-    for (let i = 0; i < months; i++) {
+    // Single query for monthly totals over the full range — instead of 6 separate calls
+    const now = new Date();
+    const from = this.formatDate(new Date(now.getFullYear(), now.getMonth() - months + 1, 1));
+    const to = this.formatDate(now);
+    const costBase = `/subscriptions/${this.subscriptionId}/providers/Microsoft.CostManagement`;
+
+    try {
+      const data = await this.costQueryWithRetry(costBase, {
+        type: 'ActualCost',
+        timeframe: 'Custom',
+        timePeriod: { from, to },
+        dataset: {
+          granularity: 'Monthly',
+          aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
+          filter: {
+            dimensions: {
+              name: 'ServiceName',
+              operator: 'In',
+              values: ['Azure Machine Learning'],
+            },
+          },
+        },
+      });
+
+      const rows = this.parseCostRows(data, 'daily') as CostDataPoint[];
+      return rows.map((r) => ({
+        month: r.date.substring(0, 7),
+        totalCost: r.cost,
+        currency: r.currency,
+        dailyCosts: [],
+        byResourceGroup: [],
+        byMeterCategory: [],
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async costQueryWithRetry(costBase: string, body: any, isForecast = false, retries = 2): Promise<any> {
+    const endpoint = isForecast ? `${costBase}/forecast` : `${costBase}/query`;
+    for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        const summary = await this.getMonthlyCosts(i);
-        results.push(summary);
-      } catch {
-        break; // Stop if we hit an error (e.g., no data for older months)
+        const response = await this.client.post(endpoint, body, {
+          params: { 'api-version': AZURE_COST_API_VERSION },
+        });
+        return response.data;
+      } catch (err: unknown) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const status = (err as any)?.response?.status;
+        if (status === 429 && attempt < retries) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const retryAfter = parseInt((err as any)?.response?.headers?.['retry-after'] || '0', 10);
+          await new Promise((r) => setTimeout(r, Math.max(retryAfter, 2) * 1000));
+          continue;
+        }
+        throw err;
       }
     }
-    return results.reverse(); // Oldest first
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

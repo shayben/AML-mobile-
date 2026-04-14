@@ -158,8 +158,16 @@ export default function LoginScreen({ navigation }: Props) {
       }
 
       const data = await resp.json();
+
+      // Acquire a second token for the ML dataplane API (metrics, logs)
+      let mlAccessToken: string | undefined;
+      if (data.refresh_token) {
+        mlAccessToken = await acquireMlToken(data.refresh_token);
+      }
+
       await saveAuthTokens({
         accessToken: data.access_token,
+        mlAccessToken,
         refreshToken: data.refresh_token ?? undefined,
         expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000,
         clientId: CLIENT_ID,
@@ -171,6 +179,30 @@ export default function LoginScreen({ navigation }: Props) {
       Alert.alert('Authentication Failed', message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function acquireMlToken(refreshToken: string): Promise<string | undefined> {
+    try {
+      const tokenUrl = `${AZURE_AUTH_URL}/${TENANT}/oauth2/v2.0/token`;
+      const body = new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: CLIENT_ID,
+        refresh_token: refreshToken,
+        scope: 'https://ml.azure.com/.default offline_access',
+      });
+
+      const resp = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+
+      if (!resp.ok) return undefined;
+      const data = await resp.json();
+      return data.access_token;
+    } catch {
+      return undefined;
     }
   }
 

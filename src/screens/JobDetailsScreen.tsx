@@ -68,6 +68,7 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
         }
         const service = new AzureMLService({
           accessToken: tokens.accessToken,
+          mlAccessToken: tokens.mlAccessToken,
           subscriptionId: tokens.subscriptionId,
         });
         serviceRef.current = service;
@@ -123,6 +124,7 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
             if (!tokens || !tokens.subscriptionId) return;
             const service = new AzureMLService({
               accessToken: tokens.accessToken,
+              mlAccessToken: tokens.mlAccessToken,
               subscriptionId: tokens.subscriptionId,
             });
             await service.cancelJob(resourceGroup, workspaceName, runId);

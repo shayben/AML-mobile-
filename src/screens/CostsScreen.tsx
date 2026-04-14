@@ -54,17 +54,23 @@ export default function CostsScreen({ navigation }: Props) {
           subscriptionId: tokens.subscriptionId,
         });
 
-        const [current, prev, fcast, trend] = await Promise.all([
+        // Fetch current month details + trend in parallel (4 queries total)
+        // Then forecast separately to avoid rate limiting (1 more query)
+        const [current, trend] = await Promise.all([
           service.getMonthlyCosts(0),
-          service.getMonthlyCosts(1),
-          service.getCostForecast(),
           service.getMultiMonthCosts(6),
         ]);
 
         setCurrentMonth(current);
-        setPrevMonth(prev);
-        setForecast(fcast);
         setMonthlyTrend(trend);
+
+        // Extract previous month from trend data to avoid extra API calls
+        const prevFromTrend = trend.length >= 2 ? trend[trend.length - 2] : null;
+        setPrevMonth(prevFromTrend);
+
+        // Forecast as a separate call to stay under rate limits
+        const fcast = await service.getCostForecast();
+        setForecast(fcast);
         setError(null);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load cost data.');

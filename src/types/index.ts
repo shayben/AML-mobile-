@@ -7,6 +7,7 @@ export interface AzureCredentials {
 
 export interface AuthTokens {
   accessToken: string;
+  mlAccessToken?: string;
   refreshToken?: string;
   expiresAt: number;
   clientId: string;
