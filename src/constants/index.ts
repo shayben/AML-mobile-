@@ -2,6 +2,7 @@ export const AZURE_AUTH_URL = 'https://login.microsoftonline.com';
 export const AZURE_MANAGEMENT_URL = 'https://management.azure.com';
 export const AZURE_ML_SCOPE = 'https://management.azure.com/.default';
 export const AZURE_ML_API_VERSION = '2023-10-01';
+export const AZURE_COST_API_VERSION = '2023-11-01';
 
 export const STORAGE_KEYS = {
   CREDENTIALS: '@aml_credentials',

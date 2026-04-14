@@ -71,14 +71,24 @@ export default function WorkspacesScreen({ navigation }: Props) {
   useEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <TouchableOpacity
-          onPress={handleLogout}
-          style={styles.logoutButton}
-          accessibilityRole="button"
-          accessibilityLabel="Sign out"
-        >
-          <Text style={styles.logoutText}>Sign Out</Text>
-        </TouchableOpacity>
+        <View style={styles.headerButtons}>
+          <TouchableOpacity
+            onPress={() => navigation.navigate('Costs')}
+            style={styles.headerButton}
+            accessibilityRole="button"
+            accessibilityLabel="View costs"
+          >
+            <Text style={styles.headerButtonText}>💰 Costs</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={handleLogout}
+            style={styles.headerButton}
+            accessibilityRole="button"
+            accessibilityLabel="Sign out"
+          >
+            <Text style={styles.headerButtonText}>Sign Out</Text>
+          </TouchableOpacity>
+        </View>
       ),
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -170,4 +180,17 @@ const styles = StyleSheet.create({
   },
   logoutButton: { marginRight: 4 },
   logoutText: { color: '#0078D4', fontSize: 15 },
+  headerButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  headerButton: {
+    marginRight: 4,
+  },
+  headerButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '500',
+  },
 });

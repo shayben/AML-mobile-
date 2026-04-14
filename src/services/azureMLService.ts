@@ -4,12 +4,17 @@ import {
   AZURE_MANAGEMENT_URL,
   AZURE_ML_API_VERSION,
   AZURE_ML_SCOPE,
+  AZURE_COST_API_VERSION,
 } from '../constants';
 import {
   AzureCredentials,
+  CostBreakdownItem,
+  CostDataPoint,
+  CostForecast,
   JobOutput,
   LogFile,
   MetricSeries,
+  MonthlyCostSummary,
   Run,
   RunDetails,
   Subscription,
@@ -310,6 +315,167 @@ export class AzureMLService {
     } catch {
       return [];
     }
+  }
+
+  async getMonthlyCosts(monthOffset = 0): Promise<MonthlyCostSummary> {
+    const now = new Date();
+    const targetMonth = new Date(now.getFullYear(), now.getMonth() - monthOffset, 1);
+    const from = this.formatDate(targetMonth);
+    const isCurrentMonth = monthOffset === 0;
+    const to = isCurrentMonth
+      ? this.formatDate(now)
+      : this.formatDate(new Date(targetMonth.getFullYear(), targetMonth.getMonth() + 1, 0));
+    const monthStr = `${targetMonth.getFullYear()}-${String(targetMonth.getMonth() + 1).padStart(2, '0')}`;
+
+    const costBase = `/subscriptions/${this.subscriptionId}/providers/Microsoft.CostManagement`;
+    const mlFilter = {
+      dimensions: {
+        name: 'ServiceName',
+        operator: 'In',
+        values: ['Azure Machine Learning'],
+      },
+    };
+
+    // Fetch daily costs + by resource group + by meter category in parallel
+    const [dailyResp, rgResp, meterResp] = await Promise.all([
+      this.client.post(`${costBase}/query`, {
+        type: 'ActualCost',
+        timeframe: 'Custom',
+        timePeriod: { from, to },
+        dataset: {
+          granularity: 'Daily',
+          aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
+          filter: mlFilter,
+        },
+      }, { params: { 'api-version': AZURE_COST_API_VERSION } }),
+
+      this.client.post(`${costBase}/query`, {
+        type: 'ActualCost',
+        timeframe: 'Custom',
+        timePeriod: { from, to },
+        dataset: {
+          granularity: 'None',
+          aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
+          grouping: [{ type: 'Dimension', name: 'ResourceGroupName' }],
+          filter: mlFilter,
+        },
+      }, { params: { 'api-version': AZURE_COST_API_VERSION } }),
+
+      this.client.post(`${costBase}/query`, {
+        type: 'ActualCost',
+        timeframe: 'Custom',
+        timePeriod: { from, to },
+        dataset: {
+          granularity: 'None',
+          aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
+          grouping: [{ type: 'Dimension', name: 'MeterCategory' }],
+          filter: mlFilter,
+        },
+      }, { params: { 'api-version': AZURE_COST_API_VERSION } }),
+    ]);
+
+    const dailyCosts = this.parseCostRows(dailyResp.data, 'daily');
+    const byResourceGroup = this.parseCostRows(rgResp.data, 'grouped') as CostBreakdownItem[];
+    const byMeterCategory = this.parseCostRows(meterResp.data, 'grouped') as CostBreakdownItem[];
+
+    const totalCost = (dailyCosts as CostDataPoint[]).reduce((sum, d) => sum + d.cost, 0);
+    const currency = (dailyCosts as CostDataPoint[])[0]?.currency
+      || (byResourceGroup as CostBreakdownItem[])[0]?.currency
+      || 'USD';
+
+    return {
+      month: monthStr,
+      totalCost,
+      currency,
+      dailyCosts: dailyCosts as CostDataPoint[],
+      byResourceGroup: (byResourceGroup as CostBreakdownItem[]).sort((a, b) => b.cost - a.cost),
+      byMeterCategory: (byMeterCategory as CostBreakdownItem[]).sort((a, b) => b.cost - a.cost),
+    };
+  }
+
+  async getCostForecast(): Promise<CostForecast> {
+    const now = new Date();
+    const from = this.formatDate(now);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const to = this.formatDate(endOfMonth);
+    const monthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+    if (from === to) {
+      return { month: monthStr, estimatedCost: 0, currency: 'USD', dailyForecast: [] };
+    }
+
+    try {
+      const costBase = `/subscriptions/${this.subscriptionId}/providers/Microsoft.CostManagement`;
+      const response = await this.client.post(`${costBase}/forecast`, {
+        type: 'ActualCost',
+        timeframe: 'Custom',
+        timePeriod: { from, to },
+        dataset: {
+          granularity: 'Daily',
+          aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
+          filter: {
+            dimensions: {
+              name: 'ServiceName',
+              operator: 'In',
+              values: ['Azure Machine Learning'],
+            },
+          },
+        },
+      }, { params: { 'api-version': AZURE_COST_API_VERSION } });
+
+      const dailyForecast = this.parseCostRows(response.data, 'daily') as CostDataPoint[];
+      const estimatedCost = dailyForecast.reduce((sum, d) => sum + d.cost, 0);
+      const currency = dailyForecast[0]?.currency || 'USD';
+
+      return { month: monthStr, estimatedCost, currency, dailyForecast };
+    } catch {
+      return { month: monthStr, estimatedCost: 0, currency: 'USD', dailyForecast: [] };
+    }
+  }
+
+  async getMultiMonthCosts(months = 6): Promise<MonthlyCostSummary[]> {
+    const results: MonthlyCostSummary[] = [];
+    // Fetch sequentially to avoid rate limiting
+    for (let i = 0; i < months; i++) {
+      try {
+        const summary = await this.getMonthlyCosts(i);
+        results.push(summary);
+      } catch {
+        break; // Stop if we hit an error (e.g., no data for older months)
+      }
+    }
+    return results.reverse(); // Oldest first
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private parseCostRows(data: any, mode: 'daily' | 'grouped'): (CostDataPoint | CostBreakdownItem)[] {
+    const columns: { name: string }[] = data?.properties?.columns || [];
+    const rows: unknown[][] = data?.properties?.rows || [];
+
+    const costIdx = columns.findIndex((c) => c.name === 'Cost');
+    const currencyIdx = columns.findIndex((c) => c.name === 'Currency');
+    const dateIdx = columns.findIndex((c) => c.name === 'UsageDate');
+    const groupIdx = columns.findIndex((c) =>
+      c.name === 'ResourceGroupName' || c.name === 'MeterCategory',
+    );
+
+    if (mode === 'daily') {
+      return rows.map((row) => ({
+        date: String(row[dateIdx] ?? '').replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3'),
+        cost: Number(row[costIdx] ?? 0),
+        currency: String(row[currencyIdx] ?? 'USD'),
+      }));
+    }
+
+    return rows.map((row) => ({
+      name: String(row[groupIdx] ?? 'Unknown'),
+      cost: Number(row[costIdx] ?? 0),
+      currency: String(row[currencyIdx] ?? 'USD'),
+    }));
+  }
+
+  private formatDate(d: Date): string {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
 
   async cancelJob(

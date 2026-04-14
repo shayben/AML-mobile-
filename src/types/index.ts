@@ -104,10 +104,39 @@ export interface JobOutput {
   mode?: string;
 }
 
+export interface CostDataPoint {
+  date: string;
+  cost: number;
+  currency: string;
+}
+
+export interface CostBreakdownItem {
+  name: string;
+  cost: number;
+  currency: string;
+}
+
+export interface MonthlyCostSummary {
+  month: string; // YYYY-MM
+  totalCost: number;
+  currency: string;
+  dailyCosts: CostDataPoint[];
+  byResourceGroup: CostBreakdownItem[];
+  byMeterCategory: CostBreakdownItem[];
+}
+
+export interface CostForecast {
+  month: string;
+  estimatedCost: number;
+  currency: string;
+  dailyForecast: CostDataPoint[];
+}
+
 export type RootStackParamList = {
   Login: undefined;
   Subscriptions: undefined;
   Workspaces: undefined;
+  Costs: undefined;
   Jobs: { workspaceName: string; resourceGroup: string; workspaceLocation: string };
   JobDetails: { runId: string; experimentName: string; workspaceName: string; resourceGroup: string; workspaceLocation: string };
 };

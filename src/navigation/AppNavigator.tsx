@@ -5,6 +5,7 @@ import { RootStackParamList } from '../types';
 import LoginScreen from '../screens/LoginScreen';
 import SubscriptionsScreen from '../screens/SubscriptionsScreen';
 import WorkspacesScreen from '../screens/WorkspacesScreen';
+import CostsScreen from '../screens/CostsScreen';
 import JobsListScreen from '../screens/JobsListScreen';
 import JobDetailsScreen from '../screens/JobDetailsScreen';
 
@@ -35,6 +36,11 @@ export default function AppNavigator() {
           name="Workspaces"
           component={WorkspacesScreen}
           options={{ title: 'Workspaces' }}
+        />
+        <Stack.Screen
+          name="Costs"
+          component={CostsScreen}
+          options={{ title: 'ML Costs' }}
         />
         <Stack.Screen
           name="Jobs"
