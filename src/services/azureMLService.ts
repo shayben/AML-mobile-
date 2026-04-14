@@ -338,43 +338,41 @@ export class AzureMLService {
       },
     };
 
-    // 3 queries for current month details (daily, by RG, by meter)
-    const [dailyResp, rgResp, meterResp] = await Promise.all([
-      this.costQueryWithRetry(costBase, {
-        type: 'ActualCost',
-        timeframe: 'Custom',
-        timePeriod: { from, to },
-        dataset: {
-          granularity: 'Daily',
-          aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
-          filter: mlFilter,
-        },
-      }),
+    // Sequential queries to avoid 429 rate limits
+    const dailyResp = await this.costQueryWithRetry(costBase, {
+      type: 'ActualCost',
+      timeframe: 'Custom',
+      timePeriod: { from, to },
+      dataset: {
+        granularity: 'Daily',
+        aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
+        filter: mlFilter,
+      },
+    });
 
-      this.costQueryWithRetry(costBase, {
-        type: 'ActualCost',
-        timeframe: 'Custom',
-        timePeriod: { from, to },
-        dataset: {
-          granularity: 'None',
-          aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
-          grouping: [{ type: 'Dimension', name: 'ResourceGroupName' }],
-          filter: mlFilter,
-        },
-      }),
+    const rgResp = await this.costQueryWithRetry(costBase, {
+      type: 'ActualCost',
+      timeframe: 'Custom',
+      timePeriod: { from, to },
+      dataset: {
+        granularity: 'None',
+        aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
+        grouping: [{ type: 'Dimension', name: 'ResourceGroupName' }],
+        filter: mlFilter,
+      },
+    });
 
-      this.costQueryWithRetry(costBase, {
-        type: 'ActualCost',
-        timeframe: 'Custom',
-        timePeriod: { from, to },
-        dataset: {
-          granularity: 'None',
-          aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
-          grouping: [{ type: 'Dimension', name: 'MeterCategory' }],
-          filter: mlFilter,
-        },
-      }),
-    ]);
+    const meterResp = await this.costQueryWithRetry(costBase, {
+      type: 'ActualCost',
+      timeframe: 'Custom',
+      timePeriod: { from, to },
+      dataset: {
+        granularity: 'None',
+        aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
+        grouping: [{ type: 'Dimension', name: 'MeterCategory' }],
+        filter: mlFilter,
+      },
+    });
 
     const dailyCosts = this.parseCostRows(dailyResp, 'daily');
     const byResourceGroup = this.parseCostRows(rgResp, 'grouped') as CostBreakdownItem[];
@@ -475,7 +473,7 @@ export class AzureMLService {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async costQueryWithRetry(costBase: string, body: any, isForecast = false, retries = 2): Promise<any> {
+  private async costQueryWithRetry(costBase: string, body: any, isForecast = false, retries = 4): Promise<any> {
     const endpoint = isForecast ? `${costBase}/forecast` : `${costBase}/query`;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
@@ -489,7 +487,8 @@ export class AzureMLService {
         if (status === 429 && attempt < retries) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const retryAfter = parseInt((err as any)?.response?.headers?.['retry-after'] || '0', 10);
-          await new Promise((r) => setTimeout(r, Math.max(retryAfter, 2) * 1000));
+          const backoff = Math.max(retryAfter, 5) * (attempt + 1);
+          await new Promise((r) => setTimeout(r, backoff * 1000));
           continue;
         }
         throw err;

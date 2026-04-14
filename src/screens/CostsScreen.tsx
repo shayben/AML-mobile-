@@ -54,21 +54,20 @@ export default function CostsScreen({ navigation }: Props) {
           subscriptionId: tokens.subscriptionId,
         });
 
-        // Fetch current month details + trend in parallel (4 queries total)
-        // Then forecast separately to avoid rate limiting (1 more query)
-        const [current, trend] = await Promise.all([
-          service.getMonthlyCosts(0),
-          service.getMultiMonthCosts(6),
-        ]);
-
+        // Serialize all cost queries to avoid 429 rate limits
+        // 1. Current month details (3 sequential sub-queries inside)
+        const current = await service.getMonthlyCosts(0);
         setCurrentMonth(current);
+
+        // 2. 6-month trend (1 query)
+        const trend = await service.getMultiMonthCosts(6);
         setMonthlyTrend(trend);
 
-        // Extract previous month from trend data to avoid extra API calls
+        // Extract previous month from trend to avoid extra API call
         const prevFromTrend = trend.length >= 2 ? trend[trend.length - 2] : null;
         setPrevMonth(prevFromTrend);
 
-        // Forecast as a separate call to stay under rate limits
+        // 3. Forecast (1 query)
         const fcast = await service.getCostForecast();
         setForecast(fcast);
         setError(null);
