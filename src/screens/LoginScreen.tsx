@@ -2,6 +2,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import React, { useEffect, useState } from 'react';
 import {
   Alert,
+  Platform,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -86,7 +87,19 @@ export default function LoginScreen({ navigation }: Props) {
   }, [response, request, redirectUri, navigation]);
 
   const handleSignIn = () => {
-    promptAsync();
+    if (Platform.OS === 'web') {
+      // On mobile browsers, popups are blocked silently.
+      // Use a full-page redirect instead of a popup window.
+      const isMobileWeb =
+        typeof navigator !== 'undefined' &&
+        /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+      promptAsync(
+        isMobileWeb ? { windowFeatures: { popup: false } } : {},
+      );
+    } else {
+      promptAsync();
+    }
   };
 
   return (
