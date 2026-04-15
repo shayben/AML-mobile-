@@ -31,26 +31,17 @@ export class AzureMLService {
   private credentials: AzureCredentials | null = null;
   private accessToken: string | null = null;
   private mlAccessToken: string | null = null;
-  private refreshToken: string | null = null;
-  private clientId: string | null = null;
-  private tenantId: string | null = null;
   private tokenExpiresAt: number = 0;
   private client: AxiosInstance;
 
   constructor(credentialsOrToken: AzureCredentials | {
     accessToken: string;
     mlAccessToken?: string;
-    refreshToken?: string;
-    clientId?: string;
-    tenantId?: string;
     subscriptionId: string;
   }) {
     if ('accessToken' in credentialsOrToken) {
       this.accessToken = credentialsOrToken.accessToken;
       this.mlAccessToken = credentialsOrToken.mlAccessToken ?? null;
-      this.refreshToken = credentialsOrToken.refreshToken ?? null;
-      this.clientId = credentialsOrToken.clientId ?? null;
-      this.tenantId = credentialsOrToken.tenantId ?? null;
       this.tokenExpiresAt = Date.now() + 3600000;
       this.credentials = {
         tenantId: '',
@@ -99,33 +90,11 @@ export class AzureMLService {
     return this.accessToken;
   }
 
-  // Get a token suitable for the ML dataplane API, trying multiple strategies
+  // Get a token for the ML dataplane API
   private async getMlToken(): Promise<string> {
+    // Use dedicated ML token if available (acquired at login time)
     if (this.mlAccessToken) return this.mlAccessToken;
-
-    // Try acquiring via refresh token
-    if (this.refreshToken && this.clientId && this.tenantId) {
-      try {
-        const url = `${AZURE_AUTH_URL}/${this.tenantId}/oauth2/v2.0/token`;
-        const body = new URLSearchParams({
-          grant_type: 'refresh_token',
-          client_id: this.clientId,
-          refresh_token: this.refreshToken,
-          scope: 'https://ml.azure.com/.default offline_access',
-        });
-        const resp = await axios.post(url, body.toString(), {
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        });
-        if (resp.data?.access_token) {
-          this.mlAccessToken = resp.data.access_token;
-          return this.mlAccessToken!;
-        }
-      } catch {
-        // Fall through to management token fallback
-      }
-    }
-
-    // Fallback: use the management token (works for some tenant configurations)
+    // Fallback: use management token (ML API may reject it, but callers handle errors)
     return this.getAccessToken();
   }
 
@@ -140,6 +109,18 @@ export class AzureMLService {
       displayName: sub.displayName,
       state: sub.state,
     }));
+  }
+
+  async hasWorkspaces(subscriptionId: string): Promise<boolean> {
+    try {
+      const url = `/subscriptions/${subscriptionId}/providers/Microsoft.MachineLearningServices/workspaces`;
+      const response = await this.client.get(url, {
+        params: { 'api-version': AZURE_ML_API_VERSION, '$top': 1 },
+      });
+      return (response.data.value || []).length > 0;
+    } catch {
+      return false;
+    }
   }
 
   async listWorkspaces(): Promise<Workspace[]> {

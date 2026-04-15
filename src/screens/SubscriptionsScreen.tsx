@@ -33,7 +33,13 @@ export default function SubscriptionsScreen({ navigation }: Props) {
       }
       const service = new AzureMLService({ accessToken: tokens.accessToken, subscriptionId: '' });
       const data = await service.listSubscriptions();
-      setSubscriptions(data.filter((s) => s.state === 'Enabled'));
+      const enabled = data.filter((s) => s.state === 'Enabled');
+
+      // Filter to only subscriptions that have at least 1 ML workspace
+      const checks = await Promise.all(
+        enabled.map((s) => service.hasWorkspaces(s.subscriptionId)),
+      );
+      setSubscriptions(enabled.filter((_, i) => checks[i]));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load subscriptions.');
@@ -83,7 +89,7 @@ export default function SubscriptionsScreen({ navigation }: Props) {
     navigation.navigate('Workspaces');
   };
 
-  if (loading) return <LoadingSpinner message="Loading subscriptions…" />;
+  if (loading) return <LoadingSpinner message="Finding subscriptions with ML workspaces…" />;
   if (error) return <ErrorMessage message={error} onRetry={fetchSubscriptions} />;
 
   return (
@@ -99,7 +105,7 @@ export default function SubscriptionsScreen({ navigation }: Props) {
       }
       ListEmptyComponent={
         <View style={styles.empty}>
-          <Text style={styles.emptyText}>No enabled subscriptions found.</Text>
+          <Text style={styles.emptyText}>No subscriptions with ML workspaces found.</Text>
         </View>
       }
       renderItem={({ item }) => (
