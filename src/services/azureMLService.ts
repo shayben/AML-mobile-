@@ -179,6 +179,51 @@ export class AzureMLService {
     };
   }
 
+  // Find MLflow runs for a job — returns child runs for pipelines, or the run itself
+  private async findMlflowRuns(
+    mlflowBase: string,
+    token: string,
+    jobName: string,
+  ): Promise<Array<{ run_id: string; data: { metrics?: Array<{ key: string; value?: number; step?: number }> } }>> {
+    // First, find the top-level run by job name
+    const response = await axios.post(
+      `${mlflowBase}/runs/search`,
+      { filter: `tags.mlflow.runName = '${jobName}'`, max_results: 1 },
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } },
+    );
+
+    const runs = response.data?.runs || [];
+    if (runs.length === 0) return [];
+
+    const parentRun = runs[0];
+    const parentRunId = parentRun.info?.run_id;
+    const parentMetrics = parentRun.data?.metrics || [];
+
+    // If the parent has metrics, it's a simple job — return it directly
+    if (parentMetrics.length > 0) {
+      return [{ run_id: parentRunId, data: parentRun.data }];
+    }
+
+    // No metrics on parent — likely a pipeline. Search for child runs.
+    try {
+      const childResp = await axios.post(
+        `${mlflowBase}/runs/search`,
+        { filter: `tags.mlflow.parentRunId = '${parentRunId}'`, max_results: 50 },
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } },
+      );
+      const childRuns = childResp.data?.runs || [];
+      if (childRuns.length > 0) {
+        return childRuns.map((r: { info: { run_id: string }; data: unknown }) => ({
+          run_id: r.info.run_id,
+          data: r.data as { metrics?: Array<{ key: string; value?: number; step?: number }> },
+        }));
+      }
+    } catch { /* fall through to return parent */ }
+
+    // No child runs found — return parent anyway
+    return [{ run_id: parentRunId, data: parentRun.data }];
+  }
+
   async getJobMetrics(
     resourceGroup: string,
     workspaceName: string,
@@ -191,48 +236,44 @@ export class AzureMLService {
       const mlflowBase = this.buildMlflowPath(workspaceLocation, resourceGroup, workspaceName);
       const token = await this.getAccessToken();
 
-      // Use MLflow runs/get to retrieve summary metrics
-      const response = await axios.post(
-        `${mlflowBase}/runs/search`,
-        { filter: `tags.mlflow.runName = '${jobName}'`, max_results: 1 },
-        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } },
-      );
-
-      const runs = response.data?.runs || [];
-      if (runs.length === 0) return {};
-
-      const mlflowRun = runs[0];
-      const runId = mlflowRun.info?.run_id;
-      const summaryMetrics = mlflowRun.data?.metrics || [];
+      const mlflowRuns = await this.findMlflowRuns(mlflowBase, token, jobName);
+      if (mlflowRuns.length === 0) return {};
 
       const result: Record<string, MetricSeries> = {};
 
-      // Get full history for each metric
-      for (const m of summaryMetrics) {
-        if (!m.key) continue;
-        try {
-          const histResp = await axios.get(
-            `${mlflowBase}/metrics/get-history`,
-            {
-              params: { run_id: runId, metric_key: m.key },
-              headers: { Authorization: `Bearer ${token}` },
-            },
-          );
-          const points = histResp.data?.metrics || [];
-          result[m.key] = {
-            name: m.key,
-            dataPoints: points.map((p: { step?: number; value?: number; timestamp?: number }, i: number) => ({
-              step: p.step ?? i,
-              value: p.value ?? 0,
-              timestamp: p.timestamp ? new Date(p.timestamp).toISOString() : '',
-            })),
-          };
-        } catch {
-          // Use summary value as single data point
-          result[m.key] = {
-            name: m.key,
-            dataPoints: [{ step: m.step ?? 0, value: m.value ?? 0, timestamp: '' }],
-          };
+      for (const mlflowRun of mlflowRuns) {
+        const runId = mlflowRun.run_id;
+        const summaryMetrics = mlflowRun.data?.metrics || [];
+
+        // Prefix metric names with step name if multiple runs (pipeline)
+        const prefix = mlflowRuns.length > 1 ? `${runId.substring(0, 8)}/` : '';
+
+        for (const m of summaryMetrics) {
+          if (!m.key) continue;
+          const metricKey = `${prefix}${m.key}`;
+          try {
+            const histResp = await axios.get(
+              `${mlflowBase}/metrics/get-history`,
+              {
+                params: { run_id: runId, metric_key: m.key },
+                headers: { Authorization: `Bearer ${token}` },
+              },
+            );
+            const points = histResp.data?.metrics || [];
+            result[metricKey] = {
+              name: metricKey,
+              dataPoints: points.map((p: { step?: number; value?: number; timestamp?: number }, i: number) => ({
+                step: p.step ?? i,
+                value: p.value ?? 0,
+                timestamp: p.timestamp ? new Date(p.timestamp).toISOString() : '',
+              })),
+            };
+          } catch {
+            result[metricKey] = {
+              name: metricKey,
+              dataPoints: [{ step: m.step ?? 0, value: m.value ?? 0, timestamp: '' }],
+            };
+          }
         }
       }
 
@@ -252,51 +293,51 @@ export class AzureMLService {
       const mlflowBase = this.buildMlflowPath(workspaceLocation, resourceGroup, workspaceName);
       const token = await this.getAccessToken();
 
-      // Find the MLflow run ID for this job
-      const searchResp = await axios.post(
-        `${mlflowBase}/runs/search`,
-        { filter: `tags.mlflow.runName = '${jobName}'`, max_results: 1 },
-        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } },
-      );
+      const mlflowRuns = await this.findMlflowRuns(mlflowBase, token, jobName);
+      if (mlflowRuns.length === 0) return [];
 
-      const runs = searchResp.data?.runs || [];
-      if (runs.length === 0) return [];
-
-      const runId = runs[0].info.run_id;
-
-      // List artifacts recursively to find log files
       const logs: LogFile[] = [];
-      const listArtifacts = async (path?: string) => {
-        const resp = await axios.get(`${mlflowBase}/artifacts/list`, {
-          params: { run_id: runId, ...(path ? { path } : {}) },
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        for (const file of resp.data?.files || []) {
-          if (file.is_dir) {
-            await listArtifacts(file.path);
-          } else if (file.path?.endsWith('.txt') || file.path?.endsWith('.log')) {
-            // Build artifact download URL
-            const downloadUrl = `${mlflowBase}/artifacts/get?run_id=${runId}&path=${encodeURIComponent(file.path)}`;
-            logs.push({ name: file.path, url: downloadUrl });
-          }
-        }
-      };
 
-      await listArtifacts('user_logs');
-      await listArtifacts('system_logs').catch(() => {});
-      // Also check root for aggregate logs
-      try {
-        const rootResp = await axios.get(`${mlflowBase}/artifacts/list`, {
-          params: { run_id: runId },
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        for (const file of rootResp.data?.files || []) {
-          if (!file.is_dir && (file.path?.endsWith('.txt') || file.path?.endsWith('.log'))) {
-            const downloadUrl = `${mlflowBase}/artifacts/get?run_id=${runId}&path=${encodeURIComponent(file.path)}`;
-            logs.push({ name: file.path, url: downloadUrl });
+      for (const mlflowRun of mlflowRuns) {
+        const runId = mlflowRun.run_id;
+        // Prefix log names with run ID snippet for pipeline child runs
+        const prefix = mlflowRuns.length > 1 ? `[${runId.substring(0, 8)}] ` : '';
+
+        const listArtifacts = async (path?: string) => {
+          const resp = await axios.get(`${mlflowBase}/artifacts/list`, {
+            params: { run_id: runId, ...(path ? { path } : {}) },
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          for (const file of resp.data?.files || []) {
+            if (file.is_dir) {
+              await listArtifacts(file.path);
+            } else if (file.path?.endsWith('.txt') || file.path?.endsWith('.log')) {
+              const downloadUrl = `${mlflowBase}/artifacts/get?run_id=${runId}&path=${encodeURIComponent(file.path)}`;
+              logs.push({ name: `${prefix}${file.path}`, url: downloadUrl });
+            }
           }
-        }
-      } catch { /* ignore */ }
+        };
+
+        try {
+          await listArtifacts('user_logs');
+        } catch { /* no user_logs dir */ }
+        try {
+          await listArtifacts('system_logs');
+        } catch { /* no system_logs dir */ }
+        // Check root for aggregate logs
+        try {
+          const rootResp = await axios.get(`${mlflowBase}/artifacts/list`, {
+            params: { run_id: runId },
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          for (const file of rootResp.data?.files || []) {
+            if (!file.is_dir && (file.path?.endsWith('.txt') || file.path?.endsWith('.log'))) {
+              const downloadUrl = `${mlflowBase}/artifacts/get?run_id=${runId}&path=${encodeURIComponent(file.path)}`;
+              logs.push({ name: `${prefix}${file.path}`, url: downloadUrl });
+            }
+          }
+        } catch { /* ignore */ }
+      }
 
       return logs;
     } catch {
