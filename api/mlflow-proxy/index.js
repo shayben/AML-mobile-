@@ -1,7 +1,7 @@
 const axios = require('axios');
 
 module.exports = async function (context, req) {
-  const routePath = req.params.path || '';
+  const routePath = req.params.restOfPath || '';
   const token = req.headers['x-azure-token'];
 
   if (!token) {
@@ -18,15 +18,20 @@ module.exports = async function (context, req) {
   const region = routePath.substring(0, slashIdx);
   const mlflowPath = routePath.substring(slashIdx + 1);
 
-  // Reconstruct query string from the original URL to avoid SWA param conflicts
-  const originalUrl = req.url || '';
-  const qsIdx = originalUrl.indexOf('?');
-  const queryString = qsIdx >= 0 ? originalUrl.substring(qsIdx) : '';
-
+  // Build query string from req.query (avoiding route param conflicts)
+  const queryParts = [];
+  if (req.query) {
+    for (const [key, value] of Object.entries(req.query)) {
+      if (value !== undefined && value !== null) {
+        queryParts.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
+      }
+    }
+  }
+  const queryString = queryParts.length > 0 ? `?${queryParts.join('&')}` : '';
   const targetUrl = `https://${region}.api.azureml.ms/mlflow/v1.0/${mlflowPath}${queryString}`;
   const isArtifactDownload = mlflowPath.includes('artifacts/get');
 
-  context.log(`[mlflow-proxy] ${req.method} ${mlflowPath}${queryString ? ' (with qs)' : ''}`);
+  context.log(`[mlflow-proxy] ${req.method} -> ${targetUrl}`);
 
   try {
     const config = {
@@ -50,8 +55,9 @@ module.exports = async function (context, req) {
     };
   } catch (err) {
     const status = err.response?.status || 500;
-    const body = err.response?.data || { error: err.message };
-    context.log(`[mlflow-proxy] Error ${status}: ${JSON.stringify(body).substring(0, 200)}`);
+    const errData = err.response?.data;
+    const body = typeof errData === 'string' ? { error: errData.substring(0, 500) } : (errData || { error: err.message });
+    context.log(`[mlflow-proxy] Error ${status}: ${JSON.stringify(body).substring(0, 300)}`);
     context.res = { status, body };
   }
 };

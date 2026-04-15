@@ -6,7 +6,7 @@
       "direction": "in",
       "name": "req",
       "methods": ["get", "post"],
-      "route": "mlflow/{*path}"
+      "route": "mlflow/{*restOfPath}"
     },
     {
       "type": "http",

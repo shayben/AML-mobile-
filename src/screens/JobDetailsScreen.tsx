@@ -51,13 +51,18 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
   const [logFiles, setLogFiles] = useState<LogFile[]>([]);
   const [outputs, setOutputs] = useState<JobOutput[]>([]);
   const [loading, setLoading] = useState(true);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [metricsLoaded, setMetricsLoaded] = useState(false);
+  const [logsLoaded, setLogsLoaded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabName>('info');
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const serviceRef = useRef<AzureMLService | null>(null);
 
-  const fetchData = useCallback(
+  // Fast load: job details + outputs (ARM API only, no cold start)
+  const fetchCore = useCallback(
     async (silent = false) => {
       if (!silent) setLoading(true);
       try {
@@ -72,15 +77,11 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
         });
         serviceRef.current = service;
 
-        const [runDetails, runMetrics, runLogs, jobOutputs] = await Promise.all([
+        const [runDetails, jobOutputs] = await Promise.all([
           service.getJobDetails(resourceGroup, workspaceName, runId),
-          service.getJobMetrics(resourceGroup, workspaceName, runId, workspaceLocation),
-          service.getJobLogFiles(resourceGroup, workspaceName, runId, workspaceLocation),
           service.getJobOutputs(resourceGroup, workspaceName, runId),
         ]);
         setRun(runDetails);
-        setMetrics(runMetrics);
-        setLogFiles(runLogs);
         setOutputs(jobOutputs);
         setError(null);
       } catch (err) {
@@ -93,23 +94,62 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
     [navigation, resourceGroup, workspaceName, runId, experimentName, workspaceLocation],
   );
 
+  // Lazy load: metrics (MLflow proxy, may have cold start)
+  const fetchMetrics = useCallback(async () => {
+    if (!serviceRef.current || metricsLoaded) return;
+    setMetricsLoading(true);
+    try {
+      const result = await serviceRef.current.getJobMetrics(
+        resourceGroup, workspaceName, runId, workspaceLocation,
+      );
+      setMetrics(result);
+      setMetricsLoaded(true);
+    } catch { /* silently fail */ }
+    setMetricsLoading(false);
+  }, [resourceGroup, workspaceName, runId, workspaceLocation, metricsLoaded]);
+
+  // Lazy load: logs (MLflow proxy, may have cold start)
+  const fetchLogs = useCallback(async () => {
+    if (!serviceRef.current || logsLoaded) return;
+    setLogsLoading(true);
+    try {
+      const result = await serviceRef.current.getJobLogFiles(
+        resourceGroup, workspaceName, runId, workspaceLocation,
+      );
+      setLogFiles(result);
+      setLogsLoaded(true);
+    } catch { /* silently fail */ }
+    setLogsLoading(false);
+  }, [resourceGroup, workspaceName, runId, workspaceLocation, logsLoaded]);
+
   useEffect(() => {
-    fetchData();
+    fetchCore();
     navigation.setOptions({ title: runId });
-  }, [fetchData, navigation, runId]);
+  }, [fetchCore, navigation, runId]);
+
+  // Fetch metrics/logs when tab is selected
+  useEffect(() => {
+    if (activeTab === 'metrics') fetchMetrics();
+    if (activeTab === 'logs') fetchLogs();
+  }, [activeTab, fetchMetrics, fetchLogs]);
 
   // Auto-refresh for running jobs
   useEffect(() => {
     if (run?.status === 'Running') {
       refreshTimer.current = setTimeout(
-        () => fetchData(true),
+        () => {
+          fetchCore(true);
+          // Also refresh metrics/logs if those tabs were loaded
+          if (metricsLoaded) { setMetricsLoaded(false); }
+          if (logsLoaded) { setLogsLoaded(false); }
+        },
         REFRESH_INTERVALS.RUNNING_JOB_METRICS_MS,
       );
     }
     return () => {
       if (refreshTimer.current) clearTimeout(refreshTimer.current);
     };
-  }, [run, fetchData]);
+  }, [run, fetchCore, metricsLoaded, logsLoaded]);
 
   const handleCancel = async () => {
     Alert.alert('Cancel Job', 'Are you sure you want to cancel this job?', [
@@ -144,7 +184,9 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
 
   const handleRefresh = () => {
     setRefreshing(true);
-    fetchData(true);
+    setMetricsLoaded(false);
+    setLogsLoaded(false);
+    fetchCore(true);
   };
 
   const statusColor = RUN_STATUS_COLORS[run.status] || '#797775';
@@ -244,7 +286,9 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
             Metrics {isRunning ? '(auto-refreshing)' : ''}
             {metricNames.length > 0 ? ` — ${metricNames.length} series` : ''}
           </Text>
-          {metricNames.length === 0 ? (
+          {metricsLoading ? (
+            <LoadingSpinner message="Loading metrics…" />
+          ) : metricNames.length === 0 ? (
             <View style={styles.emptyCard}>
               <Text style={styles.emptyText}>No metrics recorded yet.</Text>
               <Text style={styles.emptyHint}>
@@ -265,7 +309,9 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
           <Text style={styles.sectionHeader}>
             Log Files {logFiles.length > 0 ? `— ${logFiles.length} files` : ''}
           </Text>
-          {serviceRef.current ? (
+          {logsLoading ? (
+            <LoadingSpinner message="Loading logs…" />
+          ) : serviceRef.current ? (
             <LogViewer logFiles={logFiles} service={serviceRef.current} />
           ) : (
             <View style={styles.emptyCard}>
