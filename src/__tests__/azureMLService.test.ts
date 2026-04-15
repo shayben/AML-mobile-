@@ -142,14 +142,12 @@ describe('AzureMLService', () => {
       expect(Object.keys(metrics)).toHaveLength(0);
     });
 
-    it('returns empty metrics when run history API fails', async () => {
+    it('returns empty metrics when MLflow API fails', async () => {
       const mockGet = jest.fn();
       (axios.create as jest.Mock).mockReturnValue(makeClientMock(mockGet));
       (axios.post as jest.Mock).mockResolvedValue({
         data: { access_token: 'tok', token_type: 'Bearer', expires_in: 3600 },
       });
-      // Make the direct axios.get call for run history fail
-      (axios as unknown as { get: jest.Mock }).get = jest.fn().mockRejectedValue(new Error('Not found'));
 
       const service = new AzureMLService(mockCredentials);
       const metrics = await service.getJobMetrics('rg1', 'ws1', 'run-001', 'eastus');
@@ -159,13 +157,12 @@ describe('AzureMLService', () => {
   });
 
   describe('getJobLogFiles', () => {
-    it('returns empty array when run history API fails', async () => {
+    it('returns empty array when MLflow API fails', async () => {
       const mockGet = jest.fn();
       (axios.create as jest.Mock).mockReturnValue(makeClientMock(mockGet));
       (axios.post as jest.Mock).mockResolvedValue({
         data: { access_token: 'tok', token_type: 'Bearer', expires_in: 3600 },
       });
-      (axios as unknown as { get: jest.Mock }).get = jest.fn().mockRejectedValue(new Error('Not found'));
 
       const service = new AzureMLService(mockCredentials);
       const logs = await service.getJobLogFiles('rg1', 'ws1', 'run-001', 'eastus');
