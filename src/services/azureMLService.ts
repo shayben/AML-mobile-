@@ -184,44 +184,35 @@ export class AzureMLService {
     mlflowBase: string,
     token: string,
     jobName: string,
-  ): Promise<Array<{ run_id: string; data: { metrics?: Array<{ key: string; value?: number; step?: number }> } }>> {
-    // First, find the top-level run by job name
-    const response = await axios.post(
+  ): Promise<Array<{ run_id: string; run_name: string; data: { metrics?: Array<{ key: string; value?: number; step?: number }> } }>> {
+    const authHeaders = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+    // rootRunId matches the ARM job name for both command and pipeline jobs
+    const resp = await axios.post(
       `${mlflowBase}/runs/search`,
-      { filter: `tags.mlflow.runName = '${jobName}'`, max_results: 1 },
-      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } },
+      { filter: `tags.mlflow.rootRunId = '${jobName}'`, max_results: 50 },
+      { headers: authHeaders },
     );
 
-    const runs = response.data?.runs || [];
-    if (runs.length === 0) return [];
+    const allRuns = resp.data?.runs || [];
+    if (allRuns.length === 0) return [];
 
-    const parentRun = runs[0];
-    const parentRunId = parentRun.info?.run_id;
-    const parentMetrics = parentRun.data?.metrics || [];
+    // For pipeline jobs: return only child runs (exclude parent which has no metrics)
+    const childRuns = allRuns.filter(
+      (r: { info: { run_id: string } }) => r.info.run_id !== jobName,
+    );
 
-    // If the parent has metrics, it's a simple job — return it directly
-    if (parentMetrics.length > 0) {
-      return [{ run_id: parentRunId, data: parentRun.data }];
-    }
+    const runsToReturn = childRuns.length > 0 ? childRuns : allRuns;
 
-    // No metrics on parent — likely a pipeline. Search for child runs.
-    try {
-      const childResp = await axios.post(
-        `${mlflowBase}/runs/search`,
-        { filter: `tags.mlflow.parentRunId = '${parentRunId}'`, max_results: 50 },
-        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } },
-      );
-      const childRuns = childResp.data?.runs || [];
-      if (childRuns.length > 0) {
-        return childRuns.map((r: { info: { run_id: string }; data: unknown }) => ({
-          run_id: r.info.run_id,
-          data: r.data as { metrics?: Array<{ key: string; value?: number; step?: number }> },
-        }));
-      }
-    } catch { /* fall through to return parent */ }
-
-    // No child runs found — return parent anyway
-    return [{ run_id: parentRunId, data: parentRun.data }];
+    return runsToReturn.map((r: { info: { run_id: string }; data: unknown }) => {
+      const tags = (r as { data?: { tags?: Array<{ key: string; value: string }> } }).data?.tags || [];
+      const runName = tags.find((t: { key: string }) => t.key === 'mlflow.runName')?.value || r.info.run_id.substring(0, 8);
+      return {
+        run_id: r.info.run_id,
+        run_name: runName,
+        data: r.data as { metrics?: Array<{ key: string; value?: number; step?: number }> },
+      };
+    });
   }
 
   async getJobMetrics(
@@ -246,7 +237,7 @@ export class AzureMLService {
         const summaryMetrics = mlflowRun.data?.metrics || [];
 
         // Prefix metric names with step name if multiple runs (pipeline)
-        const prefix = mlflowRuns.length > 1 ? `${runId.substring(0, 8)}/` : '';
+        const prefix = mlflowRuns.length > 1 ? `${mlflowRun.run_name}/` : '';
 
         for (const m of summaryMetrics) {
           if (!m.key) continue;
@@ -300,8 +291,8 @@ export class AzureMLService {
 
       for (const mlflowRun of mlflowRuns) {
         const runId = mlflowRun.run_id;
-        // Prefix log names with run ID snippet for pipeline child runs
-        const prefix = mlflowRuns.length > 1 ? `[${runId.substring(0, 8)}] ` : '';
+        // Prefix log names with step name for pipeline child runs
+        const prefix = mlflowRuns.length > 1 ? `[${mlflowRun.run_name}] ` : '';
 
         const listArtifacts = async (path?: string) => {
           const resp = await axios.get(`${mlflowBase}/artifacts/list`, {
