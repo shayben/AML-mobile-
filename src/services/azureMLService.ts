@@ -179,19 +179,24 @@ export class AzureMLService {
     };
   }
 
+  // Build headers for MLflow proxy calls (uses X-Azure-Token since SWA strips Authorization)
+  private mlflowHeaders(token: string, contentType?: string): Record<string, string> {
+    const headers: Record<string, string> = { 'X-Azure-Token': token };
+    if (contentType) headers['Content-Type'] = contentType;
+    return headers;
+  }
+
   // Find MLflow runs for a job — returns child runs for pipelines, or the run itself
   private async findMlflowRuns(
     mlflowBase: string,
     token: string,
     jobName: string,
   ): Promise<Array<{ run_id: string; run_name: string; data: { metrics?: Array<{ key: string; value?: number; step?: number }> } }>> {
-    const authHeaders = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-
     // rootRunId matches the ARM job name for both command and pipeline jobs
     const resp = await axios.post(
       `${mlflowBase}/runs/search`,
       { filter: `tags.mlflow.rootRunId = '${jobName}'`, max_results: 50 },
-      { headers: authHeaders },
+      { headers: this.mlflowHeaders(token, 'application/json') },
     );
 
     const allRuns = resp.data?.runs || [];
@@ -251,7 +256,7 @@ export class AzureMLService {
               `${mlflowBase}/metrics/get-history`,
               {
                 params: { run_id: runId, metric_key: m.key },
-                headers: { Authorization: `Bearer ${token}` },
+                headers: this.mlflowHeaders(token),
               },
             );
             const points = histResp.data?.metrics || [];
@@ -303,7 +308,7 @@ export class AzureMLService {
         const listArtifacts = async (path?: string) => {
           const resp = await axios.get(`${mlflowBase}/artifacts/list`, {
             params: { run_id: runId, ...(path ? { path } : {}) },
-            headers: { Authorization: `Bearer ${token}` },
+            headers: this.mlflowHeaders(token),
           });
           for (const file of resp.data?.files || []) {
             if (file.is_dir) {
@@ -328,7 +333,7 @@ export class AzureMLService {
         try {
           const rootResp = await axios.get(`${mlflowBase}/artifacts/list`, {
             params: { run_id: runId },
-            headers: { Authorization: `Bearer ${token}` },
+            headers: this.mlflowHeaders(token),
           });
           for (const file of rootResp.data?.files || []) {
             if (!file.is_dir && (file.path?.endsWith('.txt') || file.path?.endsWith('.log'))) {
@@ -353,7 +358,7 @@ export class AzureMLService {
       const response = await axios.get(url, {
         responseType: 'text',
         timeout: 15000,
-        headers: { Authorization: `Bearer ${token}` },
+        headers: this.mlflowHeaders(token),
       });
       return typeof response.data === 'string'
         ? response.data

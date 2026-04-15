@@ -2,10 +2,12 @@ const axios = require('axios');
 
 module.exports = async function (context, req) {
   const path = req.params.path || '';
-  const authorization = req.headers['authorization'];
+  // SWA strips the standard Authorization header from managed Functions requests
+  // so the frontend passes the token via X-Azure-Token instead
+  const token = req.headers['x-azure-token'];
 
-  if (!authorization) {
-    context.res = { status: 401, body: { error: 'Missing authorization header' } };
+  if (!token) {
+    context.res = { status: 401, body: { error: 'Missing X-Azure-Token header' } };
     return;
   }
 
@@ -26,7 +28,7 @@ module.exports = async function (context, req) {
       method: req.method.toLowerCase(),
       url: targetUrl,
       headers: {
-        'Authorization': authorization,
+        'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
       ...(req.body && { data: req.body }),
