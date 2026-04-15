@@ -221,13 +221,17 @@ export class AzureMLService {
     jobName: string,
     workspaceLocation?: string,
   ): Promise<Record<string, MetricSeries>> {
-    if (!workspaceLocation) return {};
+    if (!workspaceLocation) {
+      console.warn('[Metrics] No workspaceLocation provided');
+      return {};
+    }
 
     try {
       const mlflowBase = this.buildMlflowPath(workspaceLocation, resourceGroup, workspaceName);
       const token = await this.getAccessToken();
 
       const mlflowRuns = await this.findMlflowRuns(mlflowBase, token, jobName);
+      console.warn(`[Metrics] Found ${mlflowRuns.length} MLflow runs for ${jobName}`);
       if (mlflowRuns.length === 0) return {};
 
       const result: Record<string, MetricSeries> = {};
@@ -269,7 +273,8 @@ export class AzureMLService {
       }
 
       return result;
-    } catch {
+    } catch (err) {
+      console.warn('[Metrics] Error:', err instanceof Error ? err.message : err);
       return {};
     }
   }
@@ -285,6 +290,7 @@ export class AzureMLService {
       const token = await this.getAccessToken();
 
       const mlflowRuns = await this.findMlflowRuns(mlflowBase, token, jobName);
+      console.warn(`[Logs] Found ${mlflowRuns.length} MLflow runs for ${jobName}`);
       if (mlflowRuns.length === 0) return [];
 
       const logs: LogFile[] = [];
@@ -315,6 +321,9 @@ export class AzureMLService {
         try {
           await listArtifacts('system_logs');
         } catch { /* no system_logs dir */ }
+        try {
+          await listArtifacts('logs');
+        } catch { /* no logs dir */ }
         // Check root for aggregate logs
         try {
           const rootResp = await axios.get(`${mlflowBase}/artifacts/list`, {
@@ -330,8 +339,10 @@ export class AzureMLService {
         } catch { /* ignore */ }
       }
 
+      console.warn(`[Logs] Found ${logs.length} log files total`);
       return logs;
-    } catch {
+    } catch (err) {
+      console.warn('[Logs] Error:', err instanceof Error ? err.message : err);
       return [];
     }
   }
@@ -611,6 +622,8 @@ export class AzureMLService {
     workspaceName: string,
   ): string {
     const region = location.toLowerCase().replace(/\s/g, '');
-    return `https://${region}.api.azureml.ms/mlflow/v1.0/subscriptions/${this.subscriptionId}/resourceGroups/${resourceGroup}/providers/Microsoft.MachineLearningServices/workspaces/${workspaceName}/api/2.0/mlflow`;
+    const mlflowSubpath = `subscriptions/${this.subscriptionId}/resourceGroups/${resourceGroup}/providers/Microsoft.MachineLearningServices/workspaces/${workspaceName}/api/2.0/mlflow`;
+    // Route through SWA API proxy to avoid CORS issues with api.azureml.ms
+    return `/api/mlflow/${region}/${mlflowSubpath}`;
   }
 }

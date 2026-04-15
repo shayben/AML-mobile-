@@ -1,7 +1,7 @@
 {
   "navigationFallback": {
     "rewrite": "/index.html",
-    "exclude": ["/_expo/static/*", "/favicon.ico", "/assets/*"]
+    "exclude": ["/_expo/static/*", "/favicon.ico", "/assets/*", "/api/*"]
   },
   "globalHeaders": {
     "X-Content-Type-Options": "nosniff",
