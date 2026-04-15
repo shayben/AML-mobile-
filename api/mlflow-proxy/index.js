@@ -1,9 +1,7 @@
 const axios = require('axios');
 
 module.exports = async function (context, req) {
-  const path = req.params.path || '';
-  // SWA strips the standard Authorization header from managed Functions requests
-  // so the frontend passes the token via X-Azure-Token instead
+  const routePath = req.params.path || '';
   const token = req.headers['x-azure-token'];
 
   if (!token) {
@@ -11,17 +9,24 @@ module.exports = async function (context, req) {
     return;
   }
 
-  // The path contains: {region}/{mlflowPath}
-  // e.g., westus2/subscriptions/.../api/2.0/mlflow/runs/search
-  const slashIdx = path.indexOf('/');
+  const slashIdx = routePath.indexOf('/');
   if (slashIdx < 0) {
     context.res = { status: 400, body: { error: 'Invalid path: expected {region}/{path}' } };
     return;
   }
 
-  const region = path.substring(0, slashIdx);
-  const mlflowPath = path.substring(slashIdx + 1);
-  const targetUrl = `https://${region}.api.azureml.ms/mlflow/v1.0/${mlflowPath}`;
+  const region = routePath.substring(0, slashIdx);
+  const mlflowPath = routePath.substring(slashIdx + 1);
+
+  // Reconstruct query string from the original URL to avoid SWA param conflicts
+  const originalUrl = req.url || '';
+  const qsIdx = originalUrl.indexOf('?');
+  const queryString = qsIdx >= 0 ? originalUrl.substring(qsIdx) : '';
+
+  const targetUrl = `https://${region}.api.azureml.ms/mlflow/v1.0/${mlflowPath}${queryString}`;
+  const isArtifactDownload = mlflowPath.includes('artifacts/get');
+
+  context.log(`[mlflow-proxy] ${req.method} ${mlflowPath}${queryString ? ' (with qs)' : ''}`);
 
   try {
     const config = {
@@ -32,28 +37,21 @@ module.exports = async function (context, req) {
         'Content-Type': 'application/json',
       },
       ...(req.body && { data: req.body }),
-      ...(req.query && Object.keys(req.query).length > 0 && { params: req.query }),
       timeout: 30000,
-      // For artifact downloads, get raw data
-      responseType: mlflowPath.includes('artifacts/get') ? 'arraybuffer' : 'json',
+      responseType: isArtifactDownload ? 'text' : 'json',
     };
 
     const response = await axios(config);
 
-    const headers = { 'Content-Type': 'application/json' };
-    if (mlflowPath.includes('artifacts/get')) {
-      headers['Content-Type'] = response.headers['content-type'] || 'text/plain';
-    }
-
     context.res = {
       status: response.status,
-      headers,
+      headers: { 'Content-Type': isArtifactDownload ? 'text/plain' : 'application/json' },
       body: response.data,
-      isRaw: mlflowPath.includes('artifacts/get'),
     };
   } catch (err) {
     const status = err.response?.status || 500;
     const body = err.response?.data || { error: err.message };
+    context.log(`[mlflow-proxy] Error ${status}: ${JSON.stringify(body).substring(0, 200)}`);
     context.res = { status, body };
   }
 };
