@@ -53,6 +53,10 @@ export async function loadSelectedWorkspace(): Promise<Workspace | null> {
   }
 }
 
+export async function clearSelectedWorkspace(): Promise<void> {
+  await AsyncStorage.removeItem(STORAGE_KEYS.SELECTED_WORKSPACE);
+}
+
 // Generic cache with TTL (default 15 minutes)
 const CACHE_TTL_MS = 15 * 60 * 1000;
 

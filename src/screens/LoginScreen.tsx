@@ -14,7 +14,7 @@ import * as Crypto from 'expo-crypto';
 import { RootStackParamList } from '../types';
 
 WebBrowser.maybeCompleteAuthSession();
-import { loadAuthTokens, saveAuthTokens } from '../services/storageService';
+import { loadAuthTokens, saveAuthTokens, loadSelectedWorkspace } from '../services/storageService';
 import { AZURE_AUTH_URL } from '../constants';
 
 const TENANT = '5b67d09b-63c3-44d3-b2af-eaa67a77b940';
@@ -71,15 +71,44 @@ export default function LoginScreen({ navigation }: Props) {
     discovery,
   );
 
-  // Check for existing tokens
+  // Check for existing tokens and fast-forward to the deepest cached step.
+  // We rebuild the back stack via navigation.reset so the user's "back" still
+  // walks Subscriptions → Workspaces → Jobs as if they'd navigated normally.
   useEffect(() => {
-    loadAuthTokens().then((tokens) => {
-      if (tokens && Date.now() < tokens.expiresAt) {
-        navigation.replace('Subscriptions');
-      } else {
+    (async () => {
+      const tokens = await loadAuthTokens();
+      if (!tokens || Date.now() >= tokens.expiresAt) {
         setReady(true);
+        return;
       }
-    });
+      if (!tokens.subscriptionId) {
+        navigation.replace('Subscriptions');
+        return;
+      }
+      const ws = await loadSelectedWorkspace();
+      if (ws) {
+        navigation.reset({
+          index: 2,
+          routes: [
+            { name: 'Subscriptions' },
+            { name: 'Workspaces' },
+            {
+              name: 'Jobs',
+              params: {
+                workspaceName: ws.name,
+                resourceGroup: ws.resourceGroup,
+                workspaceLocation: ws.location,
+              },
+            },
+          ],
+        });
+        return;
+      }
+      navigation.reset({
+        index: 1,
+        routes: [{ name: 'Subscriptions' }, { name: 'Workspaces' }],
+      });
+    })();
   }, [navigation]);
 
   // On web page load, check URL for OAuth redirect callback

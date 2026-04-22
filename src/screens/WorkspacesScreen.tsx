@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { RootStackParamList, Workspace } from '../types';
 import { AzureMLService } from '../services/azureMLService';
-import { clearAuthTokens, loadAuthTokens } from '../services/storageService';
+import { clearAuthTokens, clearSelectedWorkspace, loadAuthTokens, saveSelectedWorkspace } from '../services/storageService';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
 
@@ -52,6 +52,7 @@ export default function WorkspacesScreen({ navigation }: Props) {
 
   const handleLogout = async () => {
     await clearAuthTokens();
+    await clearSelectedWorkspace();
     navigation.replace('Login');
   };
 
@@ -60,7 +61,9 @@ export default function WorkspacesScreen({ navigation }: Props) {
     fetchWorkspaces();
   };
 
-  const handleSelectWorkspace = (ws: Workspace) => {
+  const handleSelectWorkspace = async (ws: Workspace) => {
+    // Persist so a returning user lands directly on Jobs after sign-in.
+    await saveSelectedWorkspace(ws);
     navigation.navigate('Jobs', {
       workspaceName: ws.name,
       resourceGroup: ws.resourceGroup,

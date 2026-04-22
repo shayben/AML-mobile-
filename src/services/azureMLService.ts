@@ -817,7 +817,12 @@ export class AzureMLService {
       return { ok: false, url: null, message: 'No workspace location provided.' };
     }
     const mlflowBase = this.buildMlflowPath(workspaceLocation, resourceGroup, workspaceName);
-    const url = `${mlflowBase}/experiments/search`;
+    // Use runs/search rather than experiments/search: AzureML's MLflow gateway
+    // doesn't implement the experiments/search endpoint and returns 404, which
+    // produces a misleading "proxy broken" diagnostic. runs/search is part of
+    // the same gateway as everything else we use, so it's the most accurate
+    // smoke test.
+    const url = `${mlflowBase}/runs/search`;
     let token: string;
     try {
       token = await this.getAccessToken();
@@ -831,13 +836,13 @@ export class AzureMLService {
         { max_results: 1 },
         { headers: this.mlflowHeaders(token, 'application/json'), timeout: 15000 },
       );
-      const experiments = resp.data?.experiments || [];
+      const runs = resp.data?.runs || [];
       return {
         ok: true,
         url,
         status: resp.status,
-        message: `OK — proxy reachable, ${experiments.length} experiment(s) returned (max 1).`,
-        experimentCount: experiments.length,
+        message: `OK — proxy reachable, ${runs.length} run(s) returned (max 1).`,
+        experimentCount: runs.length,
       };
     } catch (err) {
       const { status, body, message } = describeAxiosError(err);

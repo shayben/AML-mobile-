@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { RootStackParamList, Subscription } from '../types';
 import { AzureMLService } from '../services/azureMLService';
-import { clearAuthTokens, loadAuthTokens, saveAuthTokens } from '../services/storageService';
+import { clearAuthTokens, clearSelectedWorkspace, loadAuthTokens, saveAuthTokens } from '../services/storageService';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
 
@@ -55,6 +55,7 @@ export default function SubscriptionsScreen({ navigation }: Props) {
 
   const handleLogout = async () => {
     await clearAuthTokens();
+    await clearSelectedWorkspace();
     navigation.replace('Login');
   };
 
@@ -84,6 +85,11 @@ export default function SubscriptionsScreen({ navigation }: Props) {
     if (!tokens) {
       navigation.replace('Login');
       return;
+    }
+    // If switching subscriptions, the previously remembered workspace is in
+    // a different sub and would 404 on next sign-in. Drop it.
+    if (tokens.subscriptionId && tokens.subscriptionId !== sub.subscriptionId) {
+      await clearSelectedWorkspace();
     }
     await saveAuthTokens({ ...tokens, subscriptionId: sub.subscriptionId });
     navigation.navigate('Workspaces');
