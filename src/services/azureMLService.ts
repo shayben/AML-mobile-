@@ -60,20 +60,53 @@ function describeAxiosError(err: unknown): { status?: number; body?: unknown; me
 // Tiny in-memory cache shared across instances. Keyed by an opaque string;
 // each entry carries its own TTL. Used to avoid re-fetching MLflow run lists
 // and log file contents on every screen refresh.
+//
+// Bounded to MAX_CACHE_ENTRIES with LRU-ish eviction (Map preserves insertion
+// order; we delete-then-set on hit to move-to-end, and drop oldest on overflow).
+// Without a cap, log bodies (potentially MBs each) accumulate as the user
+// navigates between jobs and never get released.
 type CacheEntry<T> = { value: T; expiresAt: number };
+const MAX_CACHE_ENTRIES = 200;
 const memoCache = new Map<string, CacheEntry<unknown>>();
 const inflight = new Map<string, Promise<unknown>>();
+
+function cacheTouch(key: string, entry: CacheEntry<unknown>): void {
+  memoCache.delete(key);
+  memoCache.set(key, entry);
+}
+
+function cacheEvictExpired(now: number): void {
+  // Sweep expired entries opportunistically. Cheap because Map iteration is
+  // O(n) and n is bounded by MAX_CACHE_ENTRIES.
+  for (const [k, v] of memoCache) {
+    if (v.expiresAt <= now) memoCache.delete(k);
+  }
+}
+
+function cacheSet<T>(key: string, value: T, ttlMs: number): void {
+  const now = Date.now();
+  cacheEvictExpired(now);
+  cacheTouch(key, { value, expiresAt: now + ttlMs });
+  while (memoCache.size > MAX_CACHE_ENTRIES) {
+    const oldest = memoCache.keys().next().value;
+    if (oldest === undefined) break;
+    memoCache.delete(oldest);
+  }
+}
 
 async function cached<T>(key: string, ttlMs: number, loader: () => Promise<T>): Promise<T> {
   const now = Date.now();
   const hit = memoCache.get(key) as CacheEntry<T> | undefined;
-  if (hit && hit.expiresAt > now) return hit.value;
+  if (hit && hit.expiresAt > now) {
+    cacheTouch(key, hit);
+    return hit.value;
+  }
   const existing = inflight.get(key) as Promise<T> | undefined;
   if (existing) return existing;
   const p = (async () => {
     try {
       const value = await loader();
-      memoCache.set(key, { value, expiresAt: Date.now() + ttlMs });
+      cacheSet(key, value, ttlMs);
       return value;
     } finally {
       inflight.delete(key);
@@ -91,6 +124,11 @@ export function clearAzureMLCache(prefix?: string): void {
   for (const k of Array.from(memoCache.keys())) {
     if (k.startsWith(prefix)) memoCache.delete(k);
   }
+}
+
+// Test/debug helper — exposes current cache footprint for memory diagnostics.
+export function getAzureMLCacheStats(): { entries: number; inflight: number } {
+  return { entries: memoCache.size, inflight: inflight.size };
 }
 
 export class AzureMLService {

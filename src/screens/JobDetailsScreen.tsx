@@ -64,38 +64,62 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
   const [activeTab, setActiveTab] = useState<TabName>('info');
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const serviceRef = useRef<AzureMLService | null>(null);
+  const serviceTokenRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // Build (or reuse) a service for the current access token. Recreating an
+  // axios-backed client on every refresh leaks instances + their pending
+  // request callbacks until GC catches up.
+  const getService = useCallback(async (): Promise<AzureMLService | null> => {
+    const tokens = await loadAuthTokens();
+    if (!tokens || !tokens.subscriptionId) {
+      navigation.replace('Login');
+      return null;
+    }
+    if (!serviceRef.current || serviceTokenRef.current !== tokens.accessToken) {
+      serviceRef.current = new AzureMLService({
+        accessToken: tokens.accessToken,
+        subscriptionId: tokens.subscriptionId,
+      });
+      serviceTokenRef.current = tokens.accessToken;
+    }
+    return serviceRef.current;
+  }, [navigation]);
 
   // Fast load: job details + outputs (ARM API only, no cold start)
   const fetchCore = useCallback(
     async (silent = false) => {
       if (!silent) setLoading(true);
       try {
-        const tokens = await loadAuthTokens();
-        if (!tokens || !tokens.subscriptionId) {
-          navigation.replace('Login');
-          return;
-        }
-        const service = new AzureMLService({
-          accessToken: tokens.accessToken,
-          subscriptionId: tokens.subscriptionId,
-        });
-        serviceRef.current = service;
+        const service = await getService();
+        if (!service) return;
 
         const [runDetails, jobOutputs] = await Promise.all([
           service.getJobDetails(resourceGroup, workspaceName, runId),
           service.getJobOutputs(resourceGroup, workspaceName, runId),
         ]);
+        if (!mountedRef.current) return;
         setRun(runDetails);
         setOutputs(jobOutputs);
         setError(null);
       } catch (err) {
+        if (!mountedRef.current) return;
         setError(err instanceof Error ? err.message : 'Failed to load job details.');
       } finally {
-        setLoading(false);
-        setRefreshing(false);
+        if (mountedRef.current) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     },
-    [navigation, resourceGroup, workspaceName, runId, experimentName, workspaceLocation],
+    [getService, resourceGroup, workspaceName, runId],
   );
 
   // Lazy load: metrics (MLflow proxy, may have cold start)
@@ -107,16 +131,18 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
       const result = await serviceRef.current.getJobMetrics(
         resourceGroup, workspaceName, runId, workspaceLocation,
       );
+      if (!mountedRef.current) return;
       setMetrics(result);
       setMetricsLoaded(true);
     } catch (err) {
+      if (!mountedRef.current) return;
       const detail = err instanceof MlflowProxyError
         ? `${err.message} [url=${err.url} status=${err.status ?? 'n/a'}]`
         : err instanceof Error ? err.message : 'Failed to load metrics.';
       console.warn('[JobDetails] metrics error:', detail);
       setMetricsError(detail);
     }
-    setMetricsLoading(false);
+    if (mountedRef.current) setMetricsLoading(false);
   }, [resourceGroup, workspaceName, runId, workspaceLocation, metricsLoaded]);
 
   // Lazy load: logs (MLflow proxy, may have cold start)
@@ -128,16 +154,18 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
       const result = await serviceRef.current.getJobLogFiles(
         resourceGroup, workspaceName, runId, workspaceLocation,
       );
+      if (!mountedRef.current) return;
       setLogFiles(result);
       setLogsLoaded(true);
     } catch (err) {
+      if (!mountedRef.current) return;
       const detail = err instanceof MlflowProxyError
         ? `${err.message} [url=${err.url} status=${err.status ?? 'n/a'}]`
         : err instanceof Error ? err.message : 'Failed to load logs.';
       console.warn('[JobDetails] logs error:', detail);
       setLogsError(detail);
     }
-    setLogsLoading(false);
+    if (mountedRef.current) setLogsLoading(false);
   }, [resourceGroup, workspaceName, runId, workspaceLocation, logsLoaded]);
 
   useEffect(() => {
@@ -151,23 +179,29 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
     if (activeTab === 'logs') fetchLogs();
   }, [activeTab, fetchMetrics, fetchLogs]);
 
-  // Auto-refresh for running jobs
+  // Auto-refresh for running jobs.
+  // Depend ONLY on run?.status (a primitive) — depending on the full `run`
+  // object would re-fire the effect every refresh because setRun produces a
+  // new object reference, which re-schedules the timer and cascades.
+  const isRunningStatus = run?.status === 'Running';
   useEffect(() => {
-    if (run?.status === 'Running') {
-      refreshTimer.current = setTimeout(
-        () => {
-          fetchCore(true);
-          // Also refresh metrics/logs if those tabs were loaded
-          if (metricsLoaded) { setMetricsLoaded(false); }
-          if (logsLoaded) { setLogsLoaded(false); }
-        },
-        REFRESH_INTERVALS.RUNNING_JOB_METRICS_MS,
-      );
-    }
+    if (!isRunningStatus) return;
+    refreshTimer.current = setTimeout(
+      () => {
+        fetchCore(true);
+        // Also refresh metrics/logs if those tabs were loaded
+        setMetricsLoaded((prev) => (prev ? false : prev));
+        setLogsLoaded((prev) => (prev ? false : prev));
+      },
+      REFRESH_INTERVALS.RUNNING_JOB_METRICS_MS,
+    );
     return () => {
-      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+      if (refreshTimer.current) {
+        clearTimeout(refreshTimer.current);
+        refreshTimer.current = null;
+      }
     };
-  }, [run, fetchCore, metricsLoaded, logsLoaded]);
+  }, [isRunningStatus, fetchCore]);
 
   const handleCancel = async () => {
     Alert.alert('Cancel Job', 'Are you sure you want to cancel this job?', [

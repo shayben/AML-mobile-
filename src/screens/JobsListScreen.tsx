@@ -33,6 +33,20 @@ export default function JobsListScreen({ navigation, route }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('All');
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const serviceRef = useRef<AzureMLService | null>(null);
+  const serviceTokenRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (refreshTimer.current) {
+        clearTimeout(refreshTimer.current);
+        refreshTimer.current = null;
+      }
+    };
+  }, []);
 
   const fetchRuns = useCallback(
     async (silent = false) => {
@@ -43,21 +57,28 @@ export default function JobsListScreen({ navigation, route }: Props) {
           navigation.replace('Login');
           return;
         }
-        const service = new AzureMLService({
-          accessToken: tokens.accessToken,
-          subscriptionId: tokens.subscriptionId,
-        });
-        const allJobs = await service.listJobs(resourceGroup, workspaceName);
+        if (!serviceRef.current || serviceTokenRef.current !== tokens.accessToken) {
+          serviceRef.current = new AzureMLService({
+            accessToken: tokens.accessToken,
+            subscriptionId: tokens.subscriptionId,
+          });
+          serviceTokenRef.current = tokens.accessToken;
+        }
+        const allJobs = await serviceRef.current.listJobs(resourceGroup, workspaceName);
+        if (!mountedRef.current) return;
         const data = statusFilter === 'All'
           ? allJobs
           : allJobs.filter((j) => j.status === statusFilter);
         setRuns(data);
         setError(null);
       } catch (err) {
+        if (!mountedRef.current) return;
         setError(err instanceof Error ? err.message : 'Failed to load jobs.');
       } finally {
-        setLoading(false);
-        setRefreshing(false);
+        if (mountedRef.current) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     },
     [navigation, resourceGroup, workspaceName, statusFilter],
@@ -67,16 +88,20 @@ export default function JobsListScreen({ navigation, route }: Props) {
     fetchRuns();
   }, [fetchRuns]);
 
-  // Auto-refresh when there are running jobs
+  // Auto-refresh when there are running jobs.
+  // Depend on a primitive (`hasRunning`) instead of the full `runs` array so
+  // the effect doesn't re-fire on every refresh and pile up timer churn.
+  const hasRunning = runs.some((r) => r.status === 'Running');
   useEffect(() => {
-    const hasRunning = runs.some((r) => r.status === 'Running');
-    if (hasRunning) {
-      refreshTimer.current = setTimeout(() => fetchRuns(true), REFRESH_INTERVALS.JOBS_LIST_MS);
-    }
+    if (!hasRunning) return;
+    refreshTimer.current = setTimeout(() => fetchRuns(true), REFRESH_INTERVALS.JOBS_LIST_MS);
     return () => {
-      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+      if (refreshTimer.current) {
+        clearTimeout(refreshTimer.current);
+        refreshTimer.current = null;
+      }
     };
-  }, [runs, fetchRuns]);
+  }, [hasRunning, fetchRuns]);
 
   const handleRefresh = () => {
     setRefreshing(true);
