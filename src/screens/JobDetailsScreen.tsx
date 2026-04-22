@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { RootStackParamList, RunDetails, MetricSeries, LogFile, JobOutput } from '../types';
-import { AzureMLService } from '../services/azureMLService';
+import { AzureMLService, MlflowProxyError } from '../services/azureMLService';
 import { loadAuthTokens } from '../services/storageService';
 import { REFRESH_INTERVALS, RUN_STATUS_COLORS } from '../constants';
 import MetricChart from '../components/MetricChart';
@@ -55,6 +55,10 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
   const [logsLoading, setLogsLoading] = useState(false);
   const [metricsLoaded, setMetricsLoaded] = useState(false);
   const [logsLoaded, setLogsLoaded] = useState(false);
+  const [metricsError, setMetricsError] = useState<string | null>(null);
+  const [logsError, setLogsError] = useState<string | null>(null);
+  const [probeResult, setProbeResult] = useState<string | null>(null);
+  const [probing, setProbing] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabName>('info');
@@ -98,13 +102,20 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
   const fetchMetrics = useCallback(async () => {
     if (!serviceRef.current || metricsLoaded) return;
     setMetricsLoading(true);
+    setMetricsError(null);
     try {
       const result = await serviceRef.current.getJobMetrics(
         resourceGroup, workspaceName, runId, workspaceLocation,
       );
       setMetrics(result);
       setMetricsLoaded(true);
-    } catch { /* silently fail */ }
+    } catch (err) {
+      const detail = err instanceof MlflowProxyError
+        ? `${err.message} [url=${err.url} status=${err.status ?? 'n/a'}]`
+        : err instanceof Error ? err.message : 'Failed to load metrics.';
+      console.warn('[JobDetails] metrics error:', detail);
+      setMetricsError(detail);
+    }
     setMetricsLoading(false);
   }, [resourceGroup, workspaceName, runId, workspaceLocation, metricsLoaded]);
 
@@ -112,13 +123,20 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
   const fetchLogs = useCallback(async () => {
     if (!serviceRef.current || logsLoaded) return;
     setLogsLoading(true);
+    setLogsError(null);
     try {
       const result = await serviceRef.current.getJobLogFiles(
         resourceGroup, workspaceName, runId, workspaceLocation,
       );
       setLogFiles(result);
       setLogsLoaded(true);
-    } catch { /* silently fail */ }
+    } catch (err) {
+      const detail = err instanceof MlflowProxyError
+        ? `${err.message} [url=${err.url} status=${err.status ?? 'n/a'}]`
+        : err instanceof Error ? err.message : 'Failed to load logs.';
+      console.warn('[JobDetails] logs error:', detail);
+      setLogsError(detail);
+    }
     setLogsLoading(false);
   }, [resourceGroup, workspaceName, runId, workspaceLocation, logsLoaded]);
 
@@ -166,7 +184,7 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
               subscriptionId: tokens.subscriptionId,
             });
             await service.cancelJob(resourceGroup, workspaceName, runId);
-            fetchData(true);
+            fetchCore(true);
           } catch (err) {
             Alert.alert(
               'Error',
@@ -179,19 +197,59 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
   };
 
   if (loading) return <LoadingSpinner message="Loading job details…" />;
-  if (error) return <ErrorMessage message={error} onRetry={() => fetchData()} />;
+  if (error) return <ErrorMessage message={error} onRetry={() => fetchCore()} />;
   if (!run) return null;
 
   const handleRefresh = () => {
     setRefreshing(true);
     setMetricsLoaded(false);
     setLogsLoaded(false);
+    setMetricsError(null);
+    setLogsError(null);
     fetchCore(true);
   };
 
   const statusColor = RUN_STATUS_COLORS[run.status] || '#797775';
   const isRunning = run.status === 'Running';
   const metricNames = Object.keys(metrics);
+  const mlflowDiagnostics = serviceRef.current?.getMlflowDiagnostics(
+    resourceGroup, workspaceName, workspaceLocation,
+  );
+  const mlflowBase = mlflowDiagnostics?.mlflowBase ?? null;
+
+  const handleProbe = async () => {
+    if (!serviceRef.current) return;
+    setProbing(true);
+    setProbeResult(null);
+    try {
+      const r = await serviceRef.current.probeMlflow(
+        resourceGroup, workspaceName, workspaceLocation,
+      );
+      setProbeResult(`${r.ok ? '✓' : '✗'} ${r.message}${r.url ? `\nURL: ${r.url}` : ''}`);
+    } catch (err) {
+      setProbeResult(`✗ Unexpected error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    setProbing(false);
+  };
+
+  const renderDiagnostics = () => mlflowBase && (
+    <View style={styles.diagnosticsBlock}>
+      <Text style={styles.diagnostics} selectable>MLflow base: {mlflowBase}</Text>
+      <TouchableOpacity
+        style={styles.probeButton}
+        onPress={handleProbe}
+        disabled={probing}
+        accessibilityRole="button"
+      >
+        <Text style={styles.probeButtonText}>
+          {probing ? 'Probing…' : 'Probe MLflow'}
+        </Text>
+      </TouchableOpacity>
+      {probeResult && (
+        <Text style={styles.diagnostics} selectable>{probeResult}</Text>
+      )}
+    </View>
+  );
 
   const tabs: { key: TabName; label: string; badge?: number }[] = [
     { key: 'info', label: 'Info' },
@@ -288,6 +346,18 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
           </Text>
           {metricsLoading ? (
             <LoadingSpinner message="Loading metrics…" />
+          ) : metricsError ? (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyText}>Failed to load metrics.</Text>
+              <Text style={styles.emptyHint} selectable>{metricsError}</Text>
+              <TouchableOpacity
+                style={styles.retryButton}
+                onPress={() => { setMetricsLoaded(false); fetchMetrics(); }}
+                accessibilityRole="button"
+              >
+                <Text style={styles.retryButtonText}>Retry</Text>
+              </TouchableOpacity>
+            </View>
           ) : metricNames.length === 0 ? (
             <View style={styles.emptyCard}>
               <Text style={styles.emptyText}>No metrics recorded yet.</Text>
@@ -300,6 +370,12 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
               <MetricChart key={name} metric={metrics[name]} />
             ))
           )}
+          {mlflowBase && (
+            <Text style={styles.diagnostics} selectable>
+              MLflow base: {mlflowBase}
+            </Text>
+          )}
+          {renderDiagnostics()}
         </View>
       )}
 
@@ -311,6 +387,18 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
           </Text>
           {logsLoading ? (
             <LoadingSpinner message="Loading logs…" />
+          ) : logsError ? (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyText}>Failed to load logs.</Text>
+              <Text style={styles.emptyHint} selectable>{logsError}</Text>
+              <TouchableOpacity
+                style={styles.retryButton}
+                onPress={() => { setLogsLoaded(false); fetchLogs(); }}
+                accessibilityRole="button"
+              >
+                <Text style={styles.retryButtonText}>Retry</Text>
+              </TouchableOpacity>
+            </View>
           ) : serviceRef.current ? (
             <LogViewer logFiles={logFiles} service={serviceRef.current} />
           ) : (
@@ -318,6 +406,7 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
               <Text style={styles.emptyText}>Loading...</Text>
             </View>
           )}
+          {renderDiagnostics()}
         </View>
       )}
 
@@ -490,6 +579,46 @@ const styles = StyleSheet.create({
     color: '#C8C6C4',
     marginTop: 8,
     textAlign: 'center',
+  },
+  diagnostics: {
+    fontSize: 11,
+    color: '#A19F9D',
+    marginTop: 12,
+    marginHorizontal: 4,
+    fontFamily: 'monospace',
+  },
+  diagnosticsBlock: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#F3F2F1',
+  },
+  probeButton: {
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    backgroundColor: '#EFF6FC',
+    borderWidth: 1,
+    borderColor: '#0078D4',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 4,
+  },
+  probeButtonText: {
+    color: '#0078D4',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  retryButton: {
+    marginTop: 12,
+    backgroundColor: '#0078D4',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 6,
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
   },
   outputCard: {
     backgroundColor: '#fff',

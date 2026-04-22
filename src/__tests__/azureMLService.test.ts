@@ -142,11 +142,16 @@ describe('AzureMLService', () => {
       expect(Object.keys(metrics)).toHaveLength(0);
     });
 
-    it('returns empty metrics when MLflow API fails', async () => {
+    it('returns empty metrics when MLflow returns no runs', async () => {
       const mockGet = jest.fn();
       (axios.create as jest.Mock).mockReturnValue(makeClientMock(mockGet));
-      (axios.post as jest.Mock).mockResolvedValue({
-        data: { access_token: 'tok', token_type: 'Bearer', expires_in: 3600 },
+      (axios.post as jest.Mock).mockImplementation((url: string) => {
+        if (url.endsWith('/runs/search')) {
+          return Promise.resolve({ data: { runs: [] } });
+        }
+        return Promise.resolve({
+          data: { access_token: 'tok', token_type: 'Bearer', expires_in: 3600 },
+        });
       });
 
       const service = new AzureMLService(mockCredentials);
@@ -154,20 +159,86 @@ describe('AzureMLService', () => {
 
       expect(Object.keys(metrics)).toHaveLength(0);
     });
+
+    it('throws MlflowProxyError when runs/search fails (no longer silent)', async () => {
+      const mockGet = jest.fn();
+      (axios.create as jest.Mock).mockReturnValue(makeClientMock(mockGet));
+      const axiosError = Object.assign(new Error('Request failed with status code 500'), {
+        isAxiosError: true,
+        response: { status: 500, data: { error: 'upstream boom' } },
+      });
+      (axios.post as jest.Mock).mockImplementation((url: string) => {
+        if (url.endsWith('/runs/search')) return Promise.reject(axiosError);
+        return Promise.resolve({
+          data: { access_token: 'tok', token_type: 'Bearer', expires_in: 3600 },
+        });
+      });
+
+      const service = new AzureMLService(mockCredentials);
+      await expect(
+        service.getJobMetrics('rg1', 'ws1', 'run-001', 'eastus'),
+      ).rejects.toMatchObject({
+        name: 'MlflowProxyError',
+        status: 500,
+      });
+    });
   });
 
   describe('getJobLogFiles', () => {
-    it('returns empty array when MLflow API fails', async () => {
+    it('returns empty array when MLflow returns no runs', async () => {
       const mockGet = jest.fn();
       (axios.create as jest.Mock).mockReturnValue(makeClientMock(mockGet));
-      (axios.post as jest.Mock).mockResolvedValue({
-        data: { access_token: 'tok', token_type: 'Bearer', expires_in: 3600 },
+      (axios.post as jest.Mock).mockImplementation((url: string) => {
+        if (url.endsWith('/runs/search')) {
+          return Promise.resolve({ data: { runs: [] } });
+        }
+        return Promise.resolve({
+          data: { access_token: 'tok', token_type: 'Bearer', expires_in: 3600 },
+        });
       });
 
       const service = new AzureMLService(mockCredentials);
       const logs = await service.getJobLogFiles('rg1', 'ws1', 'run-001', 'eastus');
 
       expect(logs).toEqual([]);
+    });
+
+    it('throws MlflowProxyError when runs/search fails (no longer silent)', async () => {
+      const mockGet = jest.fn();
+      (axios.create as jest.Mock).mockReturnValue(makeClientMock(mockGet));
+      const axiosError = Object.assign(new Error('Request failed with status code 401'), {
+        isAxiosError: true,
+        response: { status: 401, data: { error: 'unauthorized' } },
+      });
+      (axios.post as jest.Mock).mockImplementation((url: string) => {
+        if (url.endsWith('/runs/search')) return Promise.reject(axiosError);
+        return Promise.resolve({
+          data: { access_token: 'tok', token_type: 'Bearer', expires_in: 3600 },
+        });
+      });
+
+      const service = new AzureMLService(mockCredentials);
+      await expect(
+        service.getJobLogFiles('rg1', 'ws1', 'run-001', 'eastus'),
+      ).rejects.toMatchObject({
+        name: 'MlflowProxyError',
+        status: 401,
+      });
+    });
+  });
+
+  describe('getMlflowDiagnostics', () => {
+    it('returns null base when location is missing', () => {
+      const service = new AzureMLService(mockCredentials);
+      expect(service.getMlflowDiagnostics('rg1', 'ws1').mlflowBase).toBeNull();
+    });
+
+    it('returns the proxy path when location is present', () => {
+      const service = new AzureMLService(mockCredentials);
+      const { mlflowBase } = service.getMlflowDiagnostics('rg1', 'ws1', 'East US');
+      expect(mlflowBase).toBe(
+        '/api/mlflow/eastus/subscriptions/test-sub/resourceGroups/rg1/providers/Microsoft.MachineLearningServices/workspaces/ws1/api/2.0/mlflow',
+      );
     });
   });
 });

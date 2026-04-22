@@ -27,6 +27,36 @@ interface TokenResponse {
   expires_in: number;
 }
 
+/**
+ * Error thrown when a call through the MLflow SWA proxy fails.
+ * Carries enough context to surface in the UI / logs without re-fetching.
+ */
+export class MlflowProxyError extends Error {
+  url: string;
+  status?: number;
+  body?: unknown;
+  constructor(message: string, url: string, status?: number, body?: unknown) {
+    super(message);
+    this.name = 'MlflowProxyError';
+    this.url = url;
+    this.status = status;
+    this.body = body;
+  }
+}
+
+function describeAxiosError(err: unknown): { status?: number; body?: unknown; message: string } {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const e = err as any;
+  if (e?.isAxiosError) {
+    return {
+      status: e.response?.status,
+      body: e.response?.data,
+      message: e.message || 'Request failed',
+    };
+  }
+  return { message: err instanceof Error ? err.message : String(err) };
+}
+
 export class AzureMLService {
   private credentials: AzureCredentials | null = null;
   private accessToken: string | null = null;
@@ -192,12 +222,25 @@ export class AzureMLService {
     token: string,
     jobName: string,
   ): Promise<Array<{ run_id: string; run_name: string; data: { metrics?: Array<{ key: string; value?: number; step?: number }> } }>> {
-    // rootRunId matches the ARM job name for both command and pipeline jobs
-    const resp = await axios.post(
-      `${mlflowBase}/runs/search`,
-      { filter: `tags.mlflow.rootRunId = '${jobName}'`, max_results: 50 },
-      { headers: this.mlflowHeaders(token, 'application/json') },
-    );
+    const url = `${mlflowBase}/runs/search`;
+    let resp;
+    try {
+      // rootRunId matches the ARM job name for both command and pipeline jobs
+      resp = await axios.post(
+        url,
+        { filter: `tags.mlflow.rootRunId = '${jobName}'`, max_results: 50 },
+        { headers: this.mlflowHeaders(token, 'application/json') },
+      );
+    } catch (err) {
+      const { status, body, message } = describeAxiosError(err);
+      console.warn(`[MLflow] runs/search failed: ${url} status=${status ?? 'n/a'} msg=${message} body=${JSON.stringify(body).substring(0, 300)}`);
+      throw new MlflowProxyError(
+        `MLflow runs/search failed (${status ?? 'no status'}): ${message}`,
+        url,
+        status,
+        body,
+      );
+    }
 
     const allRuns = resp.data?.runs || [];
     if (allRuns.length === 0) return [];
@@ -227,61 +270,61 @@ export class AzureMLService {
     workspaceLocation?: string,
   ): Promise<Record<string, MetricSeries>> {
     if (!workspaceLocation) {
-      console.warn('[Metrics] No workspaceLocation provided');
+      console.warn('[Metrics] No workspaceLocation provided — returning empty result');
       return {};
     }
 
-    try {
-      const mlflowBase = this.buildMlflowPath(workspaceLocation, resourceGroup, workspaceName);
-      const token = await this.getAccessToken();
+    const mlflowBase = this.buildMlflowPath(workspaceLocation, resourceGroup, workspaceName);
+    const token = await this.getAccessToken();
 
-      const mlflowRuns = await this.findMlflowRuns(mlflowBase, token, jobName);
-      console.warn(`[Metrics] Found ${mlflowRuns.length} MLflow runs for ${jobName}`);
-      if (mlflowRuns.length === 0) return {};
+    // Errors here propagate to the caller so the UI can render an error state
+    // instead of a silently-empty list. Per-metric history failures still fall
+    // back to the summary value below.
+    const mlflowRuns = await this.findMlflowRuns(mlflowBase, token, jobName);
+    console.warn(`[Metrics] Found ${mlflowRuns.length} MLflow runs for ${jobName} via ${mlflowBase}`);
+    if (mlflowRuns.length === 0) return {};
 
-      const result: Record<string, MetricSeries> = {};
+    const result: Record<string, MetricSeries> = {};
 
-      for (const mlflowRun of mlflowRuns) {
-        const runId = mlflowRun.run_id;
-        const summaryMetrics = mlflowRun.data?.metrics || [];
+    for (const mlflowRun of mlflowRuns) {
+      const runId = mlflowRun.run_id;
+      const summaryMetrics = mlflowRun.data?.metrics || [];
 
-        // Prefix metric names with step name if multiple runs (pipeline)
-        const prefix = mlflowRuns.length > 1 ? `${mlflowRun.run_name}/` : '';
+      // Prefix metric names with step name if multiple runs (pipeline)
+      const prefix = mlflowRuns.length > 1 ? `${mlflowRun.run_name}/` : '';
 
-        for (const m of summaryMetrics) {
-          if (!m.key) continue;
-          const metricKey = `${prefix}${m.key}`;
-          try {
-            const histResp = await axios.get(
-              `${mlflowBase}/metrics/get-history`,
-              {
-                params: { run_id: runId, metric_key: m.key },
-                headers: this.mlflowHeaders(token),
-              },
-            );
-            const points = histResp.data?.metrics || [];
-            result[metricKey] = {
-              name: metricKey,
-              dataPoints: points.map((p: { step?: number; value?: number; timestamp?: number }, i: number) => ({
-                step: p.step ?? i,
-                value: p.value ?? 0,
-                timestamp: p.timestamp ? new Date(p.timestamp).toISOString() : '',
-              })),
-            };
-          } catch {
-            result[metricKey] = {
-              name: metricKey,
-              dataPoints: [{ step: m.step ?? 0, value: m.value ?? 0, timestamp: '' }],
-            };
-          }
+      for (const m of summaryMetrics) {
+        if (!m.key) continue;
+        const metricKey = `${prefix}${m.key}`;
+        try {
+          const histResp = await axios.get(
+            `${mlflowBase}/metrics/get-history`,
+            {
+              params: { run_id: runId, metric_key: m.key },
+              headers: this.mlflowHeaders(token),
+            },
+          );
+          const points = histResp.data?.metrics || [];
+          result[metricKey] = {
+            name: metricKey,
+            dataPoints: points.map((p: { step?: number; value?: number; timestamp?: number }, i: number) => ({
+              step: p.step ?? i,
+              value: p.value ?? 0,
+              timestamp: p.timestamp ? new Date(p.timestamp).toISOString() : '',
+            })),
+          };
+        } catch (err) {
+          const { status, message } = describeAxiosError(err);
+          console.warn(`[Metrics] get-history fallback for ${metricKey} (status=${status ?? 'n/a'}): ${message}`);
+          result[metricKey] = {
+            name: metricKey,
+            dataPoints: [{ step: m.step ?? 0, value: m.value ?? 0, timestamp: '' }],
+          };
         }
       }
-
-      return result;
-    } catch (err) {
-      console.warn('[Metrics] Error:', err instanceof Error ? err.message : err);
-      return {};
     }
+
+    return result;
   }
 
   async getJobLogFiles(
@@ -290,17 +333,19 @@ export class AzureMLService {
     jobName: string,
     workspaceLocation: string,
   ): Promise<LogFile[]> {
-    try {
-      const mlflowBase = this.buildMlflowPath(workspaceLocation, resourceGroup, workspaceName);
-      const token = await this.getAccessToken();
+    const mlflowBase = this.buildMlflowPath(workspaceLocation, resourceGroup, workspaceName);
+    const token = await this.getAccessToken();
 
-      const mlflowRuns = await this.findMlflowRuns(mlflowBase, token, jobName);
-      console.warn(`[Logs] Found ${mlflowRuns.length} MLflow runs for ${jobName}`);
-      if (mlflowRuns.length === 0) return [];
+    // Errors here propagate to the caller so the UI can render an error state
+    // instead of a silently-empty list. The per-directory listArtifacts calls
+    // below intentionally swallow 4xx since not every run has every dir.
+    const mlflowRuns = await this.findMlflowRuns(mlflowBase, token, jobName);
+    console.warn(`[Logs] Found ${mlflowRuns.length} MLflow runs for ${jobName} via ${mlflowBase}`);
+    if (mlflowRuns.length === 0) return [];
 
-      const logs: LogFile[] = [];
+    const logs: LogFile[] = [];
 
-      for (const mlflowRun of mlflowRuns) {
+    for (const mlflowRun of mlflowRuns) {
         const runId = mlflowRun.run_id;
         // Prefix log names with step name for pipeline child runs
         const prefix = mlflowRuns.length > 1 ? `[${mlflowRun.run_name}] ` : '';
@@ -346,10 +391,6 @@ export class AzureMLService {
 
       console.warn(`[Logs] Found ${logs.length} log files total`);
       return logs;
-    } catch (err) {
-      console.warn('[Logs] Error:', err instanceof Error ? err.message : err);
-      return [];
-    }
   }
 
   async getLogContent(url: string): Promise<string> {
@@ -630,5 +671,73 @@ export class AzureMLService {
     const mlflowSubpath = `subscriptions/${this.subscriptionId}/resourceGroups/${resourceGroup}/providers/Microsoft.MachineLearningServices/workspaces/${workspaceName}/api/2.0/mlflow`;
     // Route through SWA API proxy to avoid CORS issues with api.azureml.ms
     return `/api/mlflow/${region}/${mlflowSubpath}`;
+  }
+
+  /** Returns the resolved MLflow proxy base path for diagnostics/UI display. */
+  getMlflowDiagnostics(
+    resourceGroup: string,
+    workspaceName: string,
+    workspaceLocation?: string,
+  ): { mlflowBase: string | null } {
+    if (!workspaceLocation) return { mlflowBase: null };
+    return { mlflowBase: this.buildMlflowPath(workspaceLocation, resourceGroup, workspaceName) };
+  }
+
+  /**
+   * Probes the MLflow proxy independently of any specific job by calling
+   * `experiments/search` with max_results=1. Useful for confirming that the
+   * proxy is reachable, the token has the right scope, and the MLflow URL/
+   * version path is correct — without needing a job whose run actually exists.
+   *
+   * Returns a structured result instead of throwing so the UI can render it.
+   */
+  async probeMlflow(
+    resourceGroup: string,
+    workspaceName: string,
+    workspaceLocation?: string,
+  ): Promise<{
+    ok: boolean;
+    url: string | null;
+    status?: number;
+    message: string;
+    experimentCount?: number;
+    body?: unknown;
+  }> {
+    if (!workspaceLocation) {
+      return { ok: false, url: null, message: 'No workspace location provided.' };
+    }
+    const mlflowBase = this.buildMlflowPath(workspaceLocation, resourceGroup, workspaceName);
+    const url = `${mlflowBase}/experiments/search`;
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, url, message: `Token fetch failed: ${msg}` };
+    }
+    try {
+      const resp = await axios.post(
+        url,
+        { max_results: 1 },
+        { headers: this.mlflowHeaders(token, 'application/json'), timeout: 15000 },
+      );
+      const experiments = resp.data?.experiments || [];
+      return {
+        ok: true,
+        url,
+        status: resp.status,
+        message: `OK — proxy reachable, ${experiments.length} experiment(s) returned (max 1).`,
+        experimentCount: experiments.length,
+      };
+    } catch (err) {
+      const { status, body, message } = describeAxiosError(err);
+      return {
+        ok: false,
+        url,
+        status,
+        message: `Probe failed (${status ?? 'no status'}): ${message}`,
+        body,
+      };
+    }
   }
 }
