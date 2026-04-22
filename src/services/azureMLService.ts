@@ -428,11 +428,24 @@ export class AzureMLService {
             pages += 1;
             if (pages > 50) break; // safety cap
           } while (pageToken);
-          return allPoints.map((p, i: number) => ({
-            step: toFiniteNumber(p.step, i),
-            value: toFiniteNumber(p.value, 0),
-            timestamp: p.timestamp ? new Date(p.timestamp).toISOString() : '',
-          }));
+          console.warn(`[Metrics] get-history ${summary.key} run=${runId.substring(0, 12)} -> ${allPoints.length} pts (${pages} page(s))`);
+          return allPoints.map((p, i: number) => {
+            // Guard against malformed timestamps — `new Date(undefined).toISOString()`
+            // throws "Invalid time value", and prior to this guard that exception
+            // bubbled up through the cached() callback, hit the catch below, and
+            // collapsed a perfectly-good 20-point series into the 1-point summary
+            // fallback.
+            let ts = '';
+            if (p.timestamp != null) {
+              const d = new Date(p.timestamp);
+              if (!Number.isNaN(d.getTime())) ts = d.toISOString();
+            }
+            return {
+              step: toFiniteNumber(p.step, i),
+              value: toFiniteNumber(p.value, 0),
+              timestamp: ts,
+            };
+          });
         });
         result[metricKey] = { name: metricKey, dataPoints: series as MetricSeries['dataPoints'] };
       } catch (err) {

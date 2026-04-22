@@ -1,0 +1,192 @@
+===CONSOLE_DUMP_BEGIN===
+[driver] visible text after load:
+openmap-train-ws
+All
+Running
+Completed
+Failed
+Canceled
+10 jobs
+regen-v2-shards-quirky-toe
+Queued
+Experiment: latentmapnet-utility
+Started:
+4/22/2026, 8:29:30 AM
+Duration:
+39m 17s
+Command
+7k-baseline-rawpt-download
+Canceled
+Experiment: latentmapnet-train-only
+Started:
+4/22/2026, 7:51:39 AM
+Duration:
+1h 17m
+Command
+7k-baseline-rawpt-nomds
+Running
+Experiment: latentmapnet-train-only
+Started:
+4/22/2026, 12:12:12 AM
+Duration:
+8h 56m
+Command
+7k-baseline-mds-romount
+Canceled
+Experiment: latentmapnet-train-only
+Started:
+4/22/2026, 12:04:38 AM
+Duration:
+9h 4m
+Command
+7k-collect-clean-target-train
+Canceled
+Experiment: latentmapnet-pipeline
+Started:
+4/21/2026, 8:33:42 PM
+Duration:
+12h 35m
+Pipeline
+7k-baseline-reuse
+Canceled
+Experiment: latentmapnet-train-only
+Started:
+4/21/2026, 8:31:30 PM
+Duration:
+12h 37m
+Command
+7k-clean-target-reuse
+Failed
+Experiment: latentmapnet-train-only
+Started:
+4/21/2026, 6:29:38 PM
+Duration:
+14h 39m
+Command
+mds-convert-quirky-toe-7k-clean
+Completed
+Experiment: latentmapnet-pipeline
+Started:
+4/21/2026, 5:34:17 PM
+Duration:
+15h 34m
+Pipeline
+7k-clean-target-reuse
+Failed
+Experiment: latentmapnet-train-only
+Started:
+4/21/2026, 4:41:39 PM
+Duration:
+16h 27m
+Command
+7k-collect-clean-target-train
+Canceled
+Experiment: latentmapnet-pipeline
+Started:
+4/21/2026, 4:34:33 PM
+Duration:
+16h 34m
+Pipeline
+[warning] [Metrics] Found 1 MLflow runs for mango_moon_8bbk953jxf via /api/mlflow/westus2/subscriptions/49a9375b-25fd-4ae0-8a2c-5253296b7a16/resourceGroups/openmap-train-aml-rg/providers/Microsoft.MachineLearningServices/workspaces/openmap-train-ws/api/2.0/mlflow
+[warning] [Metrics] get-history act/pos_z_mean run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history grad/temporal_proj run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history param/latent_decoder run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history grad/pma run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history grad/temporal_backbone run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history act/gru_h_frac_zero run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history grad/temporal_skip run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history act/pos_x_mean run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history grad/type_embedding run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history param/latent_encoder run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history param/hint_proj run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history param/pma run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history param/ln_pre_temporal run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history param/ln_pre_xtype run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history param/ln_hint run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history grad/cross_type_attn run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history grad/ln_hint run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history step/weighted/gps_bias run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history param/ln_post_temporal run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history param/temporal_skip run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history param/temporal_proj run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history param/structure_head run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history grad/ln_post_xtype run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history train/lr run=mango_moon_8 -> 60 pts (1 page(s))
+[warning] [Metrics] get-history act/pos_z_std run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history grad/structure_head run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history param/ln_post_xtype run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history step/loss_struct run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history gap/train_val_loss run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history step/weighted/latent run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history act/gru_h_mean run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history param/temporal_backbone run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history step/loss_pos_mse run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history grad/latent_encoder run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history train/loss_struct run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history param/position_head run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history step/loss_smooth run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history train/best_rmse run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history val/pos_rmse_xy run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history checkpoint/best_val_loss run=mango_moon_8 -> 13 pts (1 page(s))
+[warning] [Metrics] get-history val/loss_pos_mse run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history val/pos_median run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history val/latent_cosine run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history param/cross_type_attn run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history val/loss_pos run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history val/loss_struct run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history sys/cpu_pct run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history step/loss_gps_bias run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history train/grad_norm run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history grad/position_head run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history model/backbone_shortcut_alpha run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history sys/ram_used_gb run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history train/loss_latent run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history step/weighted/struct run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history grad/ln_pre_xtype run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history val/struct_iou run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history sys/gpu_mem_peak_gb run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history step/weighted/pos run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history step/weighted/pos_mse run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history train/loss_smooth run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history step/weighted/cov_reg run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history checkpoint/best_rmse_epoch run=mango_moon_8 -> 11 pts (1 page(s))
+[warning] [Metrics] get-history train/best_val_loss run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history checkpoint/best_rmse_value run=mango_moon_8 -> 11 pts (1 page(s))
+[warning] [Metrics] get-history val/pos_p95 run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history perf/samples_per_sec run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history train/lambda_pos_effective run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history step/weighted/smooth run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history step/loss_latent run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history step/loss_pos run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history val/loss_latent run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history step/loss_cov_reg run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history gap/train_val_pos run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history train/patience_counter run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history val/pos_rmse run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history train/loss_consistency run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history sys/gpu_mem_alloc_gb run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history checkpoint/best_val_epoch run=mango_moon_8 -> 13 pts (1 page(s))
+[warning] [Metrics] get-history val/loss_consistency run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history train/loss_cov_reg run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history train/loss_pos run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history train/loss_pos_mse run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history val/loss_smooth run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history perf/epoch_seconds run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history param/type_embedding run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history val/loss_total run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history perf/phase run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history train/loss_total run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history train/frozen_rmse_count run=mango_moon_8 -> 20 pts (1 page(s))
+[warning] [Metrics] get-history param/channel_encoder run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history act/pos_y_mean run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history grad/hint_proj run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history act/gru_h_std run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history act/pos_x_std run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history act/pos_y_std run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history grad/ln_post_temporal run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history grad/channel_encoder run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history grad/ln_pre_temporal run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] get-history step/loss_total run=mango_moon_8 -> 40 pts (1 page(s))
+[warning] [Metrics] get-history grad/latent_decoder run=mango_moon_8 -> 21 pts (1 page(s))
+[warning] [Metrics] Found 1 MLflow runs for mango_moon_8bbk953jxf via /api/mlflow/westus2/subscriptions/49a9375b-25fd-4ae0-8a2c-5253296b7a16/resourceGroups/openmap-train-aml-rg/providers/Microsoft.MachineLearningServices/workspaces/openmap-train-ws/api/2.0/mlflow
+===CONSOLE_DUMP_END===
