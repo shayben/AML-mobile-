@@ -199,7 +199,7 @@ describe('AzureMLService', () => {
       });
 
       const service = new AzureMLService(mockCredentials);
-      const logs = await service.getJobLogFiles('rg1', 'ws1', 'run-001', 'eastus');
+      const logs = await service.getJobLogFiles('rg1', 'ws1', 'run-001', 'eastus', 'exp1');
 
       expect(logs).toEqual([]);
     });
@@ -220,7 +220,7 @@ describe('AzureMLService', () => {
 
       const service = new AzureMLService(mockCredentials);
       await expect(
-        service.getJobLogFiles('rg1', 'ws1', 'run-001', 'eastus'),
+        service.getJobLogFiles('rg1', 'ws1', 'run-001', 'eastus', 'exp1'),
       ).rejects.toMatchObject({
         name: 'MlflowProxyError',
         status: 401,

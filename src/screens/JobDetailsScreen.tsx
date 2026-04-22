@@ -153,7 +153,7 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
     setLogsError(null);
     try {
       const result = await serviceRef.current.getJobLogFiles(
-        resourceGroup, workspaceName, runId, workspaceLocation,
+        resourceGroup, workspaceName, runId, workspaceLocation, experimentName,
       );
       if (!mountedRef.current) return;
       setLogFiles(result);

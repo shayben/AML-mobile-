@@ -402,15 +402,33 @@ export class AzureMLService {
       const cacheKey = `metric:${mlflowBase}:${runId}:${summary.key}`;
       try {
         const series = await cached(cacheKey, 15_000, async () => {
-          const histResp = await axios.get(
-            `${mlflowBase}/metrics/get-history`,
-            {
-              params: { run_id: runId, metric_key: summary.key },
-              headers: this.mlflowHeaders(token),
-            },
-          );
-          const points = histResp.data?.metrics || [];
-          return points.map((p: { step?: number; value?: unknown; timestamp?: number }, i: number) => ({
+          // Paginate through all history pages. AzureML's MLflow gateway
+          // returns only the first page (often a single point) when no
+          // max_results / page_token is supplied, which manifests as flat
+          // 1-point charts in the UI.
+          const allPoints: Array<{ step?: number; value?: unknown; timestamp?: number }> = [];
+          let pageToken: string | undefined;
+          let pages = 0;
+          do {
+            const histResp = await axios.get(
+              `${mlflowBase}/metrics/get-history`,
+              {
+                params: {
+                  run_id: runId,
+                  metric_key: summary.key,
+                  max_results: 25000,
+                  ...(pageToken ? { page_token: pageToken } : {}),
+                },
+                headers: this.mlflowHeaders(token),
+              },
+            );
+            const pagePoints = histResp.data?.metrics || [];
+            allPoints.push(...pagePoints);
+            pageToken = histResp.data?.next_page_token;
+            pages += 1;
+            if (pages > 50) break; // safety cap
+          } while (pageToken);
+          return allPoints.map((p, i: number) => ({
             step: toFiniteNumber(p.step, i),
             value: toFiniteNumber(p.value, 0),
             timestamp: p.timestamp ? new Date(p.timestamp).toISOString() : '',
@@ -439,8 +457,10 @@ export class AzureMLService {
     workspaceName: string,
     jobName: string,
     workspaceLocation: string,
+    experimentName: string,
   ): Promise<LogFile[]> {
     const mlflowBase = this.buildMlflowPath(workspaceLocation, resourceGroup, workspaceName);
+    const amlBase = this.buildAmlPath(workspaceLocation, resourceGroup, workspaceName);
     const token = await this.getAccessToken();
 
     // Errors here propagate to the caller so the UI can render an error state
@@ -450,6 +470,13 @@ export class AzureMLService {
     console.warn(`[Logs] Found ${mlflowRuns.length} MLflow runs for ${jobName} via ${mlflowBase}`);
     if (mlflowRuns.length === 0) return [];
 
+    // We list artifacts via MLflow (which works on the AzureML gateway) but
+    // *download* via the AzureML run-history Artifact Service, because
+    // AzureML's MLflow gateway doesn't proxy artifact bytes (both
+    // /artifacts/get and /mlflow-artifacts/artifacts return 404). The aml-proxy
+    // function does the SAS-uri -> blob fetch in two server-side hops.
+    const encodedExperiment = encodeURIComponent(experimentName);
+
     // Fan out per-run, per-directory listings in parallel. Recursive listings
     // also parallelize their child requests. With 3-4 known dirs + root + many
     // subdirs, this turns 10+ sequential round-trips into 1-2 waves.
@@ -457,10 +484,8 @@ export class AzureMLService {
       const runId = mlflowRun.run_id;
       const prefix = mlflowRuns.length > 1 ? `[${mlflowRun.run_name}] ` : '';
 
-      const buildDownloadUrl = (filePath: string) => {
-        const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
-        return `${mlflowBase}-artifacts/artifacts/${encodedPath}?run_uuid=${encodeURIComponent(runId)}`;
-      };
+      const buildDownloadUrl = (filePath: string) =>
+        `${amlBase}/experiments/${encodedExperiment}/runs/${encodeURIComponent(runId)}/artifacts/artifacturi?path=${encodeURIComponent(filePath)}`;
 
       const collected: LogFile[] = [];
 
@@ -770,6 +795,16 @@ export class AzureMLService {
 
   private buildWorkspacePath(resourceGroup: string, workspaceName: string): string {
     return `/subscriptions/${this.subscriptionId}/resourceGroups/${resourceGroup}/providers/Microsoft.MachineLearningServices/workspaces/${workspaceName}`;
+  }
+
+  private buildAmlPath(
+    location: string,
+    resourceGroup: string,
+    workspaceName: string,
+  ): string {
+    const region = location.toLowerCase().replace(/\s/g, '');
+    const wsSubpath = `subscriptions/${this.subscriptionId}/resourceGroups/${resourceGroup}/providers/Microsoft.MachineLearningServices/workspaces/${workspaceName}`;
+    return `/api/aml/${region}/history/v1.0/${wsSubpath}`;
   }
 
   private buildMlflowPath(
