@@ -57,6 +57,42 @@ function describeAxiosError(err: unknown): { status?: number; body?: unknown; me
   return { message: err instanceof Error ? err.message : String(err) };
 }
 
+// Tiny in-memory cache shared across instances. Keyed by an opaque string;
+// each entry carries its own TTL. Used to avoid re-fetching MLflow run lists
+// and log file contents on every screen refresh.
+type CacheEntry<T> = { value: T; expiresAt: number };
+const memoCache = new Map<string, CacheEntry<unknown>>();
+const inflight = new Map<string, Promise<unknown>>();
+
+async function cached<T>(key: string, ttlMs: number, loader: () => Promise<T>): Promise<T> {
+  const now = Date.now();
+  const hit = memoCache.get(key) as CacheEntry<T> | undefined;
+  if (hit && hit.expiresAt > now) return hit.value;
+  const existing = inflight.get(key) as Promise<T> | undefined;
+  if (existing) return existing;
+  const p = (async () => {
+    try {
+      const value = await loader();
+      memoCache.set(key, { value, expiresAt: Date.now() + ttlMs });
+      return value;
+    } finally {
+      inflight.delete(key);
+    }
+  })();
+  inflight.set(key, p);
+  return p;
+}
+
+export function clearAzureMLCache(prefix?: string): void {
+  if (!prefix) {
+    memoCache.clear();
+    return;
+  }
+  for (const k of Array.from(memoCache.keys())) {
+    if (k.startsWith(prefix)) memoCache.delete(k);
+  }
+}
+
 export class AzureMLService {
   private credentials: AzureCredentials | null = null;
   private accessToken: string | null = null;
@@ -216,8 +252,20 @@ export class AzureMLService {
     return headers;
   }
 
-  // Find MLflow runs for a job — returns child runs for pipelines, or the run itself
+  // Find MLflow runs for a job — returns child runs for pipelines, or the run itself.
+  // Cached for 30s per (mlflowBase, jobName) so metrics + logs tabs share one
+  // upstream call and refreshes feel instant.
   private async findMlflowRuns(
+    mlflowBase: string,
+    token: string,
+    jobName: string,
+  ): Promise<Array<{ run_id: string; run_name: string; data: { metrics?: Array<{ key: string; value?: number; step?: number }> } }>> {
+    return cached(`runs:${mlflowBase}:${jobName}`, 30_000, () =>
+      this.findMlflowRunsUncached(mlflowBase, token, jobName),
+    );
+  }
+
+  private async findMlflowRunsUncached(
     mlflowBase: string,
     token: string,
     jobName: string,
@@ -286,43 +334,52 @@ export class AzureMLService {
 
     const result: Record<string, MetricSeries> = {};
 
+    // Build a flat list of (run, summary metric) tuples then fan out get-history
+    // calls in parallel. The previous sequential loop made the wait scale
+    // linearly with metric count.
+    type Task = {
+      runId: string;
+      prefix: string;
+      summary: { key: string; value?: number; step?: number };
+    };
+    const tasks: Task[] = [];
     for (const mlflowRun of mlflowRuns) {
-      const runId = mlflowRun.run_id;
-      const summaryMetrics = mlflowRun.data?.metrics || [];
-
-      // Prefix metric names with step name if multiple runs (pipeline)
       const prefix = mlflowRuns.length > 1 ? `${mlflowRun.run_name}/` : '';
-
-      for (const m of summaryMetrics) {
+      for (const m of mlflowRun.data?.metrics || []) {
         if (!m.key) continue;
-        const metricKey = `${prefix}${m.key}`;
-        try {
+        tasks.push({ runId: mlflowRun.run_id, prefix, summary: m });
+      }
+    }
+
+    await Promise.all(tasks.map(async ({ runId, prefix, summary }) => {
+      const metricKey = `${prefix}${summary.key}`;
+      const cacheKey = `metric:${mlflowBase}:${runId}:${summary.key}`;
+      try {
+        const series = await cached(cacheKey, 15_000, async () => {
           const histResp = await axios.get(
             `${mlflowBase}/metrics/get-history`,
             {
-              params: { run_id: runId, metric_key: m.key },
+              params: { run_id: runId, metric_key: summary.key },
               headers: this.mlflowHeaders(token),
             },
           );
           const points = histResp.data?.metrics || [];
-          result[metricKey] = {
-            name: metricKey,
-            dataPoints: points.map((p: { step?: number; value?: number; timestamp?: number }, i: number) => ({
-              step: p.step ?? i,
-              value: p.value ?? 0,
-              timestamp: p.timestamp ? new Date(p.timestamp).toISOString() : '',
-            })),
-          };
-        } catch (err) {
-          const { status, message } = describeAxiosError(err);
-          console.warn(`[Metrics] get-history fallback for ${metricKey} (status=${status ?? 'n/a'}): ${message}`);
-          result[metricKey] = {
-            name: metricKey,
-            dataPoints: [{ step: m.step ?? 0, value: m.value ?? 0, timestamp: '' }],
-          };
-        }
+          return points.map((p: { step?: number; value?: number; timestamp?: number }, i: number) => ({
+            step: p.step ?? i,
+            value: p.value ?? 0,
+            timestamp: p.timestamp ? new Date(p.timestamp).toISOString() : '',
+          }));
+        });
+        result[metricKey] = { name: metricKey, dataPoints: series as MetricSeries['dataPoints'] };
+      } catch (err) {
+        const { status, message } = describeAxiosError(err);
+        console.warn(`[Metrics] get-history fallback for ${metricKey} (status=${status ?? 'n/a'}): ${message}`);
+        result[metricKey] = {
+          name: metricKey,
+          dataPoints: [{ step: summary.step ?? 0, value: summary.value ?? 0, timestamp: '' }],
+        };
       }
-    }
+    }));
 
     return result;
   }
@@ -343,78 +400,73 @@ export class AzureMLService {
     console.warn(`[Logs] Found ${mlflowRuns.length} MLflow runs for ${jobName} via ${mlflowBase}`);
     if (mlflowRuns.length === 0) return [];
 
-    const logs: LogFile[] = [];
+    // Fan out per-run, per-directory listings in parallel. Recursive listings
+    // also parallelize their child requests. With 3-4 known dirs + root + many
+    // subdirs, this turns 10+ sequential round-trips into 1-2 waves.
+    const allFiles = await Promise.all(mlflowRuns.map(async (mlflowRun) => {
+      const runId = mlflowRun.run_id;
+      const prefix = mlflowRuns.length > 1 ? `[${mlflowRun.run_name}] ` : '';
 
-    for (const mlflowRun of mlflowRuns) {
-        const runId = mlflowRun.run_id;
-        // Prefix log names with step name for pipeline child runs
-        const prefix = mlflowRuns.length > 1 ? `[${mlflowRun.run_name}] ` : '';
+      const buildDownloadUrl = (filePath: string) => {
+        const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+        return `${mlflowBase}-artifacts/artifacts/${encodedPath}?run_uuid=${encodeURIComponent(runId)}`;
+      };
 
-        // Build a download URL for a single artifact via the MLflow proxied
-        // artifact endpoint. Standard MLflow exposes these at
-        // `/api/2.0/mlflow-artifacts/artifacts/{path}?run_uuid=...`. The legacy
-        // `/artifacts/get?...` path used previously is not a real MLflow
-        // endpoint and 404s on AzureML's MLflow gateway.
-        const buildDownloadUrl = (filePath: string) => {
-          const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
-          return `${mlflowBase}-artifacts/artifacts/${encodedPath}?run_uuid=${encodeURIComponent(runId)}`;
-        };
+      const collected: LogFile[] = [];
 
-        const listArtifacts = async (path?: string) => {
-          const resp = await axios.get(`${mlflowBase}/artifacts/list`, {
-            params: { run_id: runId, ...(path ? { path } : {}) },
-            headers: this.mlflowHeaders(token),
-          });
-          for (const file of resp.data?.files || []) {
-            if (file.is_dir) {
-              await listArtifacts(file.path);
-            } else if (file.path?.endsWith('.txt') || file.path?.endsWith('.log')) {
-              logs.push({ name: `${prefix}${file.path}`, url: buildDownloadUrl(file.path) });
-            }
+      const listArtifacts = async (path?: string): Promise<void> => {
+        const resp = await axios.get(`${mlflowBase}/artifacts/list`, {
+          params: { run_id: runId, ...(path ? { path } : {}) },
+          headers: this.mlflowHeaders(token),
+        });
+        const files = resp.data?.files || [];
+        const recursions: Promise<void>[] = [];
+        for (const file of files) {
+          if (file.is_dir) {
+            recursions.push(listArtifacts(file.path).catch(() => undefined));
+          } else if (file.path?.endsWith('.txt') || file.path?.endsWith('.log')) {
+            collected.push({ name: `${prefix}${file.path}`, url: buildDownloadUrl(file.path) });
           }
-        };
+        }
+        if (recursions.length) await Promise.all(recursions);
+      };
 
-        try {
-          await listArtifacts('user_logs');
-        } catch { /* no user_logs dir */ }
-        try {
-          await listArtifacts('system_logs');
-        } catch { /* no system_logs dir */ }
-        try {
-          await listArtifacts('logs');
-        } catch { /* no logs dir */ }
-        // Check root for aggregate logs
-        try {
-          const rootResp = await axios.get(`${mlflowBase}/artifacts/list`, {
-            params: { run_id: runId },
-            headers: this.mlflowHeaders(token),
-          });
-          for (const file of rootResp.data?.files || []) {
-            if (!file.is_dir && (file.path?.endsWith('.txt') || file.path?.endsWith('.log'))) {
-              logs.push({ name: `${prefix}${file.path}`, url: buildDownloadUrl(file.path) });
-            }
-          }
-        } catch { /* ignore */ }
-      }
+      // Fan out the well-known top-level dirs + root in parallel; ignore 4xx
+      // for dirs that don't exist on this run.
+      await Promise.all([
+        listArtifacts('user_logs').catch(() => undefined),
+        listArtifacts('system_logs').catch(() => undefined),
+        listArtifacts('logs').catch(() => undefined),
+        listArtifacts().catch(() => undefined),
+      ]);
 
-      console.warn(`[Logs] Found ${logs.length} log files total`);
-      return logs;
+      return collected;
+    }));
+
+    const logs = allFiles.flat();
+    console.warn(`[Logs] Found ${logs.length} log files total`);
+    return logs;
   }
 
   async getLogContent(url: string): Promise<string> {
-    try {
-      const token = await this.getAccessToken();
-      const response = await axios.get(url, {
-        responseType: 'text',
-        timeout: 15000,
-        headers: this.mlflowHeaders(token),
-      });
-      return typeof response.data === 'string'
-        ? response.data
-        : JSON.stringify(response.data, null, 2);
-    } catch {
-      return '[Failed to load log content]';
-    }
+    // Cache log bodies for 60s — log files for completed steps are immutable
+    // and even running steps' logs only append slowly. A short TTL keeps the
+    // viewer snappy when switching between files.
+    return cached(`logbody:${url}`, 60_000, async () => {
+      try {
+        const token = await this.getAccessToken();
+        const response = await axios.get(url, {
+          responseType: 'text',
+          timeout: 15000,
+          headers: this.mlflowHeaders(token),
+        });
+        return typeof response.data === 'string'
+          ? response.data
+          : JSON.stringify(response.data, null, 2);
+      } catch {
+        return '[Failed to load log content]';
+      }
+    });
   }
 
   async getJobOutputs(

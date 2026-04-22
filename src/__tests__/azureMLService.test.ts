@@ -1,4 +1,4 @@
-import { AzureMLService } from '../services/azureMLService';
+import { AzureMLService, clearAzureMLCache } from '../services/azureMLService';
 import axios from 'axios';
 
 // Manual factory mock to avoid triggering the real axios fetch adapter at module init time
@@ -32,6 +32,7 @@ function makeClientMock(getImpl: jest.Mock = jest.fn()) {
 describe('AzureMLService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    clearAzureMLCache();
     (axios.create as jest.Mock).mockReturnValue(makeClientMock());
   });
 
