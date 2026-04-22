@@ -350,6 +350,16 @@ export class AzureMLService {
         // Prefix log names with step name for pipeline child runs
         const prefix = mlflowRuns.length > 1 ? `[${mlflowRun.run_name}] ` : '';
 
+        // Build a download URL for a single artifact via the MLflow proxied
+        // artifact endpoint. Standard MLflow exposes these at
+        // `/api/2.0/mlflow-artifacts/artifacts/{path}?run_uuid=...`. The legacy
+        // `/artifacts/get?...` path used previously is not a real MLflow
+        // endpoint and 404s on AzureML's MLflow gateway.
+        const buildDownloadUrl = (filePath: string) => {
+          const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+          return `${mlflowBase}-artifacts/artifacts/${encodedPath}?run_uuid=${encodeURIComponent(runId)}`;
+        };
+
         const listArtifacts = async (path?: string) => {
           const resp = await axios.get(`${mlflowBase}/artifacts/list`, {
             params: { run_id: runId, ...(path ? { path } : {}) },
@@ -359,8 +369,7 @@ export class AzureMLService {
             if (file.is_dir) {
               await listArtifacts(file.path);
             } else if (file.path?.endsWith('.txt') || file.path?.endsWith('.log')) {
-              const downloadUrl = `${mlflowBase}/artifacts/get?run_id=${runId}&path=${encodeURIComponent(file.path)}`;
-              logs.push({ name: `${prefix}${file.path}`, url: downloadUrl });
+              logs.push({ name: `${prefix}${file.path}`, url: buildDownloadUrl(file.path) });
             }
           }
         };
@@ -382,8 +391,7 @@ export class AzureMLService {
           });
           for (const file of rootResp.data?.files || []) {
             if (!file.is_dir && (file.path?.endsWith('.txt') || file.path?.endsWith('.log'))) {
-              const downloadUrl = `${mlflowBase}/artifacts/get?run_id=${runId}&path=${encodeURIComponent(file.path)}`;
-              logs.push({ name: `${prefix}${file.path}`, url: downloadUrl });
+              logs.push({ name: `${prefix}${file.path}`, url: buildDownloadUrl(file.path) });
             }
           }
         } catch { /* ignore */ }

@@ -343,10 +343,11 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
           <Text style={styles.sectionHeader}>
             Metrics {isRunning ? '(auto-refreshing)' : ''}
             {metricNames.length > 0 ? ` — ${metricNames.length} series` : ''}
+            {metricsLoading && metricNames.length > 0 ? '  ⟳ refreshing…' : ''}
           </Text>
-          {metricsLoading ? (
+          {metricsLoading && metricNames.length === 0 ? (
             <LoadingSpinner message="Loading metrics…" />
-          ) : metricsError ? (
+          ) : metricsError && metricNames.length === 0 ? (
             <View style={styles.emptyCard}>
               <Text style={styles.emptyText}>Failed to load metrics.</Text>
               <Text style={styles.emptyHint} selectable>{metricsError}</Text>
@@ -366,14 +367,18 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
               </Text>
             </View>
           ) : (
-            metricNames.map((name) => (
-              <MetricChart key={name} metric={metrics[name]} />
-            ))
-          )}
-          {mlflowBase && (
-            <Text style={styles.diagnostics} selectable>
-              MLflow base: {mlflowBase}
-            </Text>
+            <>
+              {metricsError && (
+                <View style={styles.warningBanner}>
+                  <Text style={styles.warningBannerText} selectable>
+                    Last refresh failed — showing previous data. {metricsError}
+                  </Text>
+                </View>
+              )}
+              {metricNames.map((name) => (
+                <MetricChart key={name} metric={metrics[name]} />
+              ))}
+            </>
           )}
           {renderDiagnostics()}
         </View>
@@ -384,10 +389,11 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
         <View style={styles.section}>
           <Text style={styles.sectionHeader}>
             Log Files {logFiles.length > 0 ? `— ${logFiles.length} files` : ''}
+            {logsLoading && logFiles.length > 0 ? '  ⟳ refreshing…' : ''}
           </Text>
-          {logsLoading ? (
+          {logsLoading && logFiles.length === 0 ? (
             <LoadingSpinner message="Loading logs…" />
-          ) : logsError ? (
+          ) : logsError && logFiles.length === 0 ? (
             <View style={styles.emptyCard}>
               <Text style={styles.emptyText}>Failed to load logs.</Text>
               <Text style={styles.emptyHint} selectable>{logsError}</Text>
@@ -400,7 +406,16 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
               </TouchableOpacity>
             </View>
           ) : serviceRef.current ? (
-            <LogViewer logFiles={logFiles} service={serviceRef.current} />
+            <>
+              {logsError && (
+                <View style={styles.warningBanner}>
+                  <Text style={styles.warningBannerText} selectable>
+                    Last refresh failed — showing previous data. {logsError}
+                  </Text>
+                </View>
+              )}
+              <LogViewer logFiles={logFiles} service={serviceRef.current} />
+            </>
           ) : (
             <View style={styles.emptyCard}>
               <Text style={styles.emptyText}>Loading...</Text>
@@ -619,6 +634,19 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 13,
     fontWeight: '600',
+  },
+  warningBanner: {
+    backgroundColor: '#FFF4CE',
+    borderLeftWidth: 3,
+    borderLeftColor: '#D8A000',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 4,
+    marginBottom: 12,
+  },
+  warningBannerText: {
+    fontSize: 12,
+    color: '#3B3A39',
   },
   outputCard: {
     backgroundColor: '#fff',

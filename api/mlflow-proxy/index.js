@@ -29,7 +29,9 @@ module.exports = async function (context, req) {
   }
   const queryString = queryParts.length > 0 ? `?${queryParts.join('&')}` : '';
   const targetUrl = `https://${region}.api.azureml.ms/mlflow/v1.0/${mlflowPath}${queryString}`;
-  const isArtifactDownload = mlflowPath.includes('artifacts/get');
+  // Treat any artifact download as text (covers both the legacy /artifacts/get
+  // shim and the standard MLflow /mlflow-artifacts/artifacts/<path> endpoint).
+  const isArtifactDownload = mlflowPath.includes('artifacts/get') || mlflowPath.includes('mlflow-artifacts/artifacts/');
 
   context.log(`[mlflow-proxy] ${req.method} -> ${targetUrl}`);
 
