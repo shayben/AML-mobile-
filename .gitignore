@@ -33,3 +33,6 @@ yarn-error.*
 
 # TypeScript
 *.tsbuildinfo
+
+scripts/probe-out*.txt
+scripts/probe-*.png
