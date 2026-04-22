@@ -15,6 +15,7 @@ import { AzureMLService, MlflowProxyError } from '../services/azureMLService';
 import { loadAuthTokens } from '../services/storageService';
 import { REFRESH_INTERVALS, RUN_STATUS_COLORS } from '../constants';
 import MetricChart from '../components/MetricChart';
+import SafeChart from '../components/SafeChart';
 import LogViewer from '../components/LogViewer';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
@@ -410,7 +411,9 @@ export default function JobDetailsScreen({ navigation, route }: Props) {
                 </View>
               )}
               {metricNames.map((name) => (
-                <MetricChart key={name} metric={metrics[name]} />
+                <SafeChart key={name} name={name}>
+                  <MetricChart metric={metrics[name]} />
+                </SafeChart>
               ))}
             </>
           )}

@@ -24,7 +24,18 @@ function downsample(points: MetricSeries['dataPoints'], maxCount: number) {
 export default function MetricChart({ metric }: MetricChartProps) {
   const points = downsample(metric.dataPoints, MAX_POINTS);
 
-  if (points.length === 0) {
+  // Defensive coercion: react-native-chart-kit calls value.toFixed() internally
+  // and crashes if any datum is non-finite. MLflow occasionally returns
+  // NaN/Infinity (as JSON strings) so we sanitize at the render boundary too,
+  // independently of the service-layer normalization.
+  const safe = points
+    .map((p) => {
+      const n = typeof p.value === 'number' ? p.value : Number(p.value);
+      return { step: p.step, value: Number.isFinite(n) ? n : null };
+    })
+    .filter((p): p is { step: number; value: number } => p.value !== null);
+
+  if (safe.length === 0) {
     return (
       <View style={styles.empty}>
         <Text style={styles.emptyText}>No data points for "{metric.name}"</Text>
@@ -32,11 +43,11 @@ export default function MetricChart({ metric }: MetricChartProps) {
     );
   }
 
-  const labelStep = Math.max(1, Math.ceil(points.length / MAX_LABELS));
-  const labels = points.map((p, i) =>
+  const labelStep = Math.max(1, Math.ceil(safe.length / MAX_LABELS));
+  const labels = safe.map((p, i) =>
     i % labelStep === 0 ? String(p.step) : '',
   );
-  const data = points.map((p) => p.value);
+  const data = safe.map((p) => p.value);
 
   const latestValue = data[data.length - 1];
 
@@ -45,7 +56,7 @@ export default function MetricChart({ metric }: MetricChartProps) {
       <View style={styles.titleRow}>
         <Text style={styles.title}>{metric.name}</Text>
         <Text style={styles.latestValue}>
-          Latest: {latestValue !== undefined ? latestValue.toFixed(4) : '—'}
+          Latest: {Number.isFinite(latestValue) ? latestValue.toFixed(4) : '—'}
         </Text>
       </View>
       <LineChart

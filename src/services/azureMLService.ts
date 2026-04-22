@@ -372,6 +372,14 @@ export class AzureMLService {
 
     const result: Record<string, MetricSeries> = {};
 
+    // MLflow serializes non-finite floats (NaN/Infinity/-Infinity) as STRINGS
+    // in JSON. Number(NaN-string) -> NaN, which crashes chart-kit later via
+    // value.toFixed(). Always coerce to a finite number, defaulting to 0.
+    const toFiniteNumber = (v: unknown, fallback = 0): number => {
+      const n = typeof v === 'number' ? v : Number(v);
+      return Number.isFinite(n) ? n : fallback;
+    };
+
     // Build a flat list of (run, summary metric) tuples then fan out get-history
     // calls in parallel. The previous sequential loop made the wait scale
     // linearly with metric count.
@@ -402,9 +410,9 @@ export class AzureMLService {
             },
           );
           const points = histResp.data?.metrics || [];
-          return points.map((p: { step?: number; value?: number; timestamp?: number }, i: number) => ({
-            step: p.step ?? i,
-            value: p.value ?? 0,
+          return points.map((p: { step?: number; value?: unknown; timestamp?: number }, i: number) => ({
+            step: toFiniteNumber(p.step, i),
+            value: toFiniteNumber(p.value, 0),
             timestamp: p.timestamp ? new Date(p.timestamp).toISOString() : '',
           }));
         });
@@ -414,7 +422,11 @@ export class AzureMLService {
         console.warn(`[Metrics] get-history fallback for ${metricKey} (status=${status ?? 'n/a'}): ${message}`);
         result[metricKey] = {
           name: metricKey,
-          dataPoints: [{ step: summary.step ?? 0, value: summary.value ?? 0, timestamp: '' }],
+          dataPoints: [{
+            step: toFiniteNumber(summary.step, 0),
+            value: toFiniteNumber(summary.value, 0),
+            timestamp: '',
+          }],
         };
       }
     }));
